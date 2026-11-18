@@ -1,0 +1,52 @@
+# tfalgo config (Phase 1). Later phases add: universe, trend, setup, trigger, stop, sizing,
+# pyramid, exits, carry, score, portfolio, regime, costs, audit, montecarlo, walkforward.
+run:
+  start: 2015-07-01
+  end: 2020-07-24
+  seed: 42
+  base_timeframe: 5m
+  holdout_months: 6
+  timezone: Asia/Kolkata
+
+session:
+  open: "09:15"
+  close: "15:30"
+  tick_size: 0.05
+  holidays_file: config/calendar/nse_holidays.csv   # fill with real NSE holidays (header: date)
+
+capital:
+  initial: 1000000        # INR 10 lakh
+  compounding: true
+  leverage: 1.0
+  sale_proceeds: immediate
+
+data:
+  provider: csv
+  csv:
+    root: data/raw                       # one file per symbol, e.g. data/raw/RELIANCE.csv
+    symbol_pattern: "{symbol}.csv"
+    index_pattern: "{index}.csv"
+    native_timeframe: 5m
+    columns: {ts: date, open: open, high: high, low: low, close: close, volume: volume}
+    naive_timestamps_tz: null            # e.g. Asia/Kolkata if your files have no +05:30 offset
+    corporate_actions_file: null         # optional CSV: symbol, ex_date, type, ratio
+    instruments_file: null               # optional CSV: symbol, isin, exchange, sector
+  symbols: [RELIANCE,APOLLOTYRE,ADANIPOWER,APOLLOTYRE,ASAINPAINT,BAJAJAUTO,BAJAJFINSV,INFY,JUSTDAIL,MARUTI,NESTLEIND,RELIANCE,TATAMOTORS,TATASTEEL,TECHM]                            # fill in your 4-5 pilot symbols
+  indexes: []                            # optional: NIFTY_MIDCAP_150, INDIA_VIX
+  retry_attempts: 5
+
+storage:
+  backend: sqlite
+  sqlite_path: data/tfalgo.db
+  output_dir: reports
+
+quality:
+  zero_volume_streak_bars: 12
+  max_missing_bar_frac: 0.02
+  outlier_bar_return: 0.15
+  outlier_daily_return: 0.25
+  split_jump_tolerance: 0.03
+  split_jump_severity: hard
+
+events:
+  provider: none        # v1 is chart-only; event vetoes/penalties are disabled

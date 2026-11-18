@@ -1,0 +1,60 @@
+"""CLI: `tfalgo data ingest|check`. Later phases add backtest/walkforward/ablation/report."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import typer
+
+from tfalgo.config import load_config
+from tfalgo.data.ingest import IngestService
+from tfalgo.data.quality import QualityChecker, hard_failed_symbols, write_report
+from tfalgo.factory import build_calendar, build_provider, build_store
+from tfalgo.logging_utils import setup_logging
+
+app = typer.Typer(help="tfalgo trend-following backtester")
+data_app = typer.Typer(help="Data ingestion and checks")
+app.add_typer(data_app, name="data")
+ConfigOpt = typer.Option("config/default.yaml", "--config", "-c", help="YAML config")
+
+
+@data_app.command("ingest")
+def ingest(config: Path = ConfigOpt, symbols: str = typer.Option("", help="comma list; default = config")) -> None:
+    """Idempotent incremental ingest (provider -> SQLite)."""
+    setup_logging()
+    cfg = load_config(config)
+    prov, store = build_provider(cfg), build_store(cfg)
+    svc = IngestService(prov, store, cfg.data.retry_attempts)
+    tf = cfg.data.csv.native_timeframe
+    syms = [s for s in symbols.split(",") if s] or cfg.data.symbols
+    if not syms:
+        typer.echo("No symbols: set data.symbols in config or pass --symbols", err=True)
+        raise typer.Exit(1)
+    for s in syms:
+        r = svc.ingest(s, tf, cfg.run.start, cfg.run.end)
+        typer.echo(f"{s}: inserted={r.inserted} identical={r.identical} conflicts={r.conflicts} {r.skipped_reason or ''}")
+    for ix in cfg.data.indexes:
+        r = svc.ingest(ix, tf, cfg.run.start, cfg.run.end, is_index=True)
+        typer.echo(f"idx:{ix}: inserted={r.inserted} {r.skipped_reason or ''}")
+
+
+@data_app.command("check")
+def check(config: Path = ConfigOpt) -> None:
+    """Run data-quality checks on stored bars; write quality_report.csv + summary."""
+    setup_logging()
+    cfg = load_config(config)
+    store, cal = build_store(cfg), build_calendar(cfg)
+    tf = cfg.data.csv.native_timeframe
+    syms = store.list_symbols(tf)
+    frames = {s: store.read_bars(s, tf) for s in syms}
+    acts = {s: store.read_corporate_actions(s) for s in syms}
+    issues = QualityChecker(cfg.quality, cal, cfg.run.timezone).run(frames, tf, acts)
+    path = write_report(issues, syms, cfg.storage.output_dir / "data")
+    failed = hard_failed_symbols(issues)
+    typer.echo(f"Checked {len(syms)} symbols; excluded: {sorted(failed) or 'none'}. Report: {path}")
+
+
+if __name__ == "__main__":
+    logging.basicConfig()
+    app()
