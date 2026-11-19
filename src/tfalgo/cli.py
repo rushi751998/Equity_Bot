@@ -101,6 +101,23 @@ def backtest_run(config: Path = ConfigOpt) -> None:
     typer.echo(res.summary_text)
     typer.echo(f"Outputs written to: {res.output_dir}")
 
+@backtest_app.command("batch")
+def backtest_batch(
+    configs: list[Path] = typer.Option(..., "--config", "-c", help="Pass -c multiple times for each strategy YAML"),
+    outdir: Path = typer.Option(Path("reports/batch"), "--outdir", help="Output folder"),
+) -> None:
+    """Run multiple strategy configs sharing one precomputed dataset + drawdown report."""
+    from tfalgo.backtest.batch import run_batch
+
+    setup_logging()
+    base_cfg = load_config(configs[0])
+    cal = build_calendar(base_cfg)
+    store = build_store(base_cfg)
+    res = run_batch(configs, store, cal, outdir)
+    with pl.Config(tbl_cols=20, tbl_rows=50):
+        typer.echo(str(res.comparison))
+    typer.echo(f"Report HTML: {res.report_html}")
+    
 if __name__ == "__main__":
     logging.basicConfig()
     app()

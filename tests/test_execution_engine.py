@@ -2,7 +2,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-
+import polars as pl
 from tfalgo.backtest.engine import run_backtest_from_frames
 from tfalgo.calendar import TradingCalendar
 from tfalgo.config import AppConfig
@@ -146,3 +146,24 @@ def test_trade_metrics_all_21_fields():
     assert m["avg_hold_days_losers"] == pytest.approx(2.0)
     assert m["avg_hold_days_all"] == pytest.approx(2.4)
     assert "Profit Factor" in format_trade_summary(m)
+
+
+def test_batch_runner_and_drawdown_report(tmp_path):
+    from tfalgo.backtest.batch import compute_equity_metrics, run_batch_from_frames
+
+    eq = pl.DataFrame({"date": ["2024-01-01", "2024-01-02", "2024-01-03"], "equity": [100.0, 110.0, 99.0]})
+    em = compute_equity_metrics(eq)
+    assert em["max_drawdown_pct"] == pytest.approx(-10.0)
+    assert em["total_return_pct"] == pytest.approx(-1.0)
+
+    cal = TradingCalendar()
+    s1 = make_intraday_5m(date(2024, 1, 1), 35, seed=10, drift=0.002)
+    bench = make_intraday_5m(date(2024, 1, 1), 35, seed=99, drift=0.001)
+    cfgs = [
+        ("pullback", _cfg()),
+        ("orb", _cfg(strategy={"name": "orb_v1", "params": {"or_end": "09:30"}})),
+    ]
+    res = run_batch_from_frames(cfgs, {"AAA": s1}, bench, cal, tmp_path / "batch")
+    assert (tmp_path / "batch" / "comparison.csv").exists()
+    assert res.report_html.exists()
+    assert "<svg" in res.report_html.read_text(encoding="utf-8")

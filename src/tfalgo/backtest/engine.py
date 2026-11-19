@@ -118,6 +118,8 @@ class PreparedMarketData:
     avail_lists: dict[str, list[date]]
     h_ends: dict[str, list[datetime]]
     m15_ends: dict[str, list[datetime]]
+    h_rows: dict[str, list[dict[str, Any]]]
+    m15_rows: dict[str, list[dict[str, Any]]]
     m5_by_date: dict[date, list[tuple[datetime, str, dict[str, Any]]]]
     bench_by_avail: dict[date, dict[str, Any]]
     panel_by_date: dict[date, dict[str, dict[str, Any]]]
@@ -156,6 +158,8 @@ def prepare_market_data(
     avail_lists = {s: d1["avail_date"].to_list() for s, d1 in daily_map.items()}
     h_ends = {s: df["bar_end"].to_list() for s, df in hourly_map.items()}
     m15_ends = {s: df["bar_end"].to_list() for s, df in m15_map.items()}
+    h_rows = {s: df.to_dicts() for s, df in hourly_map.items()}
+    m15_rows = {s: df.to_dicts() for s, df in m15_map.items()}
     m5_by_date: dict[date, list[tuple[datetime, str, dict[str, Any]]]] = {}
     for sym, m5 in m5_map.items():
         for row in m5.iter_rows(named=True):
@@ -169,7 +173,8 @@ def prepare_market_data(
             panel_by_date.setdefault(row["date"], {})[row["symbol"]] = row
     return PreparedMarketData(
         daily_map, hourly_map, m15_map, m5_map, bench_d1, panel, all_dates,
-        daily_by_avail, avail_lists, h_ends, m15_ends, m5_by_date, bench_by_avail, panel_by_date,
+        daily_by_avail, avail_lists, h_ends, m15_ends, h_rows, m15_rows,
+        m5_by_date, bench_by_avail, panel_by_date,
     )
 
 def run_backtest_from_frames(
@@ -355,16 +360,29 @@ def run_backtest_from_frames(
                 h_idx = bisect_right(data.h_ends[sym], ts)
                 m15_idx = bisect_right(data.m15_ends[sym], ts)
                 if d_row and p_row and h_idx > 0 and m15_idx > 0:
-                    h_last = data.hourly_map[sym].row(h_idx - 1, named=True)
-                    m15_done = data.m15_map[sym].slice(0, m15_idx)
-                    m15_last = m15_done.row(m15_idx - 1, named=True)
+                    h_last = data.h_rows[sym][h_idx - 1]
+                    m15_list = data.m15_rows[sym]
+                    m15_last = m15_list[m15_idx - 1]
                     atr15 = float(m15_last.get("atr") or 0.0)
                     h_atr = float(h_last.get("atr") or atr15 * 2.0)
-                    flag_hi = find_flag_high(m15_done, atr15, cfg) if atr15 > 0 else None
-                    if sym not in pat_cache:
-                        d_idx = bisect_right(data.avail_lists[sym], cur_date)
-                        pat_cache[sym] = evaluate_patterns(data.daily_map[sym].slice(0, d_idx), cfg.score.patterns)
-                    pat_name, pat_q = pat_cache[sym]
+                    flag_hi = None
+                    if atr15 > 0 and cfg.strategy.name == "trend_pullback_v1":
+                        f_cfg = cfg.setup.flag
+                        for flen in range(f_cfg.max_bars, f_cfg.min_bars - 1, -1):
+                            if m15_idx >= flen:
+                                win = m15_list[m15_idx - flen : m15_idx]
+                                w_hi = max(float(r["high"]) for r in win)
+                                w_lo = min(float(r["low"]) for r in win)
+                                if (w_hi - w_lo) <= f_cfg.max_range_atr15 * atr15:
+                                    flag_hi = w_hi
+                                    break
+                    if cfg.strategy.name == "trend_pullback_v1" or cfg.strategy.params.get("use_patterns"):
+                        if sym not in pat_cache:
+                            d_idx = bisect_right(data.avail_lists[sym], cur_date)
+                            pat_cache[sym] = evaluate_patterns(data.daily_map[sym].slice(0, d_idx), cfg.score.patterns)
+                        pat_name, pat_q = pat_cache[sym]
+                    else:
+                        pat_name, pat_q = None, 0.0
                     close_px = float(bar["close"])
                     rng_b = float(bar["high"]) - float(bar["low"])
                     ext_h = (close_px - float(h_last.get(f"ema{cfg.trend.ribbon_emas[-1]}") or close_px)) / max(h_atr, 1e-6)
