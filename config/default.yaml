@@ -23,16 +23,17 @@ capital:
 data:
   provider: csv
   csv:
-    root: data/raw                       # one file per symbol, e.g. data/raw/RELIANCE.csv
+    root: data/raw
     symbol_pattern: "{symbol}.csv"
     index_pattern: "{index}.csv"
     native_timeframe: 5m
+    index_native_timeframe: 1m
     columns: {ts: date, open: open, high: high, low: low, close: close, volume: volume}
-    naive_timestamps_tz: null            # e.g. Asia/Kolkata if your files have no +05:30 offset
-    corporate_actions_file: null         # optional CSV: symbol, ex_date, type, ratio
-    instruments_file: null               # optional CSV: symbol, isin, exchange, sector
-  symbols: [RELIANCE,APOLLOTYRE,ADANIPOWER,APOLLOTYRE,ASAINPAINT,BAJAJAUTO,BAJAJFINSV,INFY,JUSTDAIL,MARUTI,NESTLEIND,RELIANCE,TATAMOTORS,TATASTEEL,TECHM]                            # fill in your 4-5 pilot symbols
-  indexes: []                            # optional: NIFTY_MIDCAP_150, INDIA_VIX
+    naive_timestamps_tz: null
+    corporate_actions_file: null
+    instruments_file: null
+  symbols: [RELIANCE, APOLLOTYRE, ADANIPOWER, ASAINPAINT, BAJAJAUTO, BAJAJFINSV, INFY, JUSTDAIL, MARUTI, NESTLEIND, TATAMOTORS, TATASTEEL, TECHM]
+  indexes: [NIFTY_50, NIFTY_BANK]
   retry_attempts: 5
 
 storage:
@@ -50,3 +51,54 @@ quality:
 
 events:
   provider: none        # v1 is chart-only; event vetoes/penalties are disabled
+
+hourly:
+  partial_bar_policy: price_only   # price_only | include_all (15:15 bar: price logic only)
+
+benchmark: {index: NIFTY_50}
+
+indicators:
+  atr_period: 14
+  bollinger_period: 20
+  bollinger_k: 2.0
+  er_period: 10
+  rs_windows: [63, 126, 252]
+  rs_line_avg_days: 10
+  high_lookback_days: 252
+  slope_days: 20
+  daily_emas: [9, 21]
+  volume_avg_days: 50
+  swing_k: 2
+
+universe:
+  symbols_source: data.symbols
+  min_adtv_cr: 20
+  adtv_window: 20
+  min_atr_pct: 2.5
+  min_price: 50
+  min_window_coverage: 0.95
+  exclude_lists: [asm.csv, gsm.csv]
+  lists_dir: config/universe
+  sectors_file: config/universe/sectors.csv
+  filters: [adtv, atr_pct, price, coverage, lists]
+
+trend:
+  ribbon_emas: [9, 15, 20]
+  ribbon_timeframe: hourly
+  ribbon_min_spread_pct: 0.15
+  ribbon_slope_bars: 3
+  daily_gate: {dma: [50, 150, 200], max_pct_below_52w_high: 25, rs_lookback_days: 63}
+
+setup:
+  leg_lookback_hours: 20
+  pullback: {min_depth_hatr: 0.3, max_depth_hatr: 1.5, max_depth_leg_frac: 0.382, volume_contraction: 0.8}
+  tightness: {bars: 3, max_range_ratio: 0.85}
+  flag: {min_bars: 4, max_bars: 8, max_range_atr15: 2.0}
+
+score:
+  enabled: true
+  zones: {full: 75, half: 60}
+  hysteresis: {enabled: false, enter_pct: 75, exit_below_pct: 55}
+  weights: {trend_quality: 25, base_pattern: 20, setup_tightness: 15, trigger_quality: 15, regime: 10, liquidity_range: 5, penalties_max: -10}
+  patterns: {vcp: true, flat_base: true, cup_handle: false, high_tight_flag: false}
+  optional: {sector_rs: false, rs_line_high: false, base_count: false}

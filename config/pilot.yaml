@@ -1,0 +1,5 @@
+# Code validation only, NOT an edge test (13 large/mid caps, survivorship-biased list).
+extends: default.yaml
+universe:
+  min_adtv_cr: 5
+  min_atr_pct: 1.5
