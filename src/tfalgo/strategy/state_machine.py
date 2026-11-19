@@ -34,19 +34,20 @@ class TrendPullbackStrategy(Strategy):
 
         if state.lifecycle == LifecycleState.IDLE:
             gate_ok, _ = daily_gate_ok(ctx, cfg)
-            if gate_ok and ctx.get("leg_valid"):
+            if gate_ok and ctx.get("leg_valid") and ctx.get("pullback_low") is not None:
                 ref_high = ctx.get("flag_high") or ctx.get("pullback_high")
                 if ref_high is not None and ctx.get("atr15"):
                     tl, zf, zc = compute_entry_zone(float(ref_high), float(ctx["atr15"]), cfg)
-                    return SymbolState(
+                    state = SymbolState(
                         symbol=state.symbol,
                         lifecycle=LifecycleState.ARMED,
                         trigger_level=tl,
                         zone_floor=zf,
                         zone_ceiling=zc,
                         entries_today=state.entries_today,
-                    ), orders
-            return state, orders
+                    )
+            if state.lifecycle != LifecycleState.ARMED:
+                return state, orders
 
         if state.lifecycle == LifecycleState.ARMED:
             trig = TRIGGER_RULES.get("pullback_flag")().check(state, ctx, cfg)
@@ -54,7 +55,7 @@ class TrendPullbackStrategy(Strategy):
                 return state, orders
             veto_ok, _ = evaluate_vetoes(ctx, cfg)
             score, zone, z_factor = compute_entry_score(ctx, cfg)
-            if not veto_ok or zone == "none":
+            if not veto_ok or zone == "none" or ctx.get("pullback_low") is None or not ctx.get("atr15"):
                 return state, orders
 
             est_entry = float(ctx["bar_close"])
@@ -80,6 +81,19 @@ class TrendPullbackStrategy(Strategy):
                 order_type="MARKET_NEXT_OPEN",
                 product="MIS",
                 reason="entry_signal",
+                meta={
+                    "swing_low": float(ctx["pullback_low"]),
+                    "atr15": float(ctx["atr15"]),
+                    "hourly_atr": float(ctx["hourly_atr"]),
+                    "planned_full_qty": sz["planned_full_qty"],
+                    "risk_budget": sz["risk_budget_inr"],
+                    "planned_full_risk": sz["planned_full_risk_inr"],
+                    "entry_score": score,
+                    "score_zone": zone,
+                    "pattern": ctx.get("pattern_name"),
+                    "pattern_quality": float(ctx.get("pattern_quality", 0.0)),
+                    "bound_constraint": sz["bound_constraint"],
+                },
             ))
             return SymbolState(
                 symbol=state.symbol,

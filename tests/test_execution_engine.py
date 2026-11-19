@@ -68,3 +68,31 @@ def test_engine_determinism_and_smoke(tmp_path):
     assert (tmp_path / "r1" / "equity.csv").exists()
     assert (tmp_path / "r1" / "summary.txt").exists()
     assert "Survivorship bias" in (tmp_path / "r1" / "summary.txt").read_text(encoding="utf-8")
+
+def test_strategy_extensibility_and_prepared_reuse(tmp_path):
+    from tfalgo.backtest.engine import prepare_market_data
+    from tfalgo.strategy.base import STRATEGIES, OrderIntent, Strategy
+
+    @STRATEGIES.register("dummy_test_strat")
+    class DummyStrat(Strategy):
+        name = "dummy_test_strat"
+
+        def on_bar(self, state, ctx, portfolio, cfg):
+            if cfg.strategy.params.get("buy_once") and state.entries_today == 0 and ctx["bar_time_str"] == "09:30":
+                px = ctx["bar_close"]
+                return state, [OrderIntent(
+                    state.symbol, "BUY", 10, reason="dummy",
+                    meta={"swing_low": px * 0.97, "atr15": 1.0, "hourly_atr": 2.0,
+                          "planned_full_qty": 10, "risk_budget": 500.0, "planned_full_risk": 500.0,
+                          "entry_score": 80.0, "score_zone": "full", "pattern": "dummy",
+                          "pattern_quality": 1.0, "bound_constraint": "risk"},
+                )]
+            return state, []
+
+    cfg = _cfg(strategy={"name": "dummy_test_strat", "params": {"buy_once": True}})
+    cal = TradingCalendar()
+    s1 = make_intraday_5m(date(2024, 1, 1), 35, seed=10, drift=0.002)
+    bench = make_intraday_5m(date(2024, 1, 1), 35, seed=99, drift=0.001)
+    prep = prepare_market_data(cfg, {"AAA": s1}, bench, cal)
+    res = run_backtest_from_frames(cfg, {"AAA": s1}, bench, cal, output_dir=tmp_path / "dum", prepared=prep)
+    assert res.equity.height > 0

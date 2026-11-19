@@ -11,7 +11,7 @@ import hashlib
 import json
 from datetime import date, time
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -485,6 +485,7 @@ class StrategyCompositionConfig(_Base):
     ]
     stop: str = "swing_low_with_fallback"
     exits: list[str] = ["ladder", "runner", "hold_score", "time_stop", "soft_exit"]
+    params: dict[str, Any] = {}
 
 class SlippageConfig(_Base):
     min_bps: float = 5.0

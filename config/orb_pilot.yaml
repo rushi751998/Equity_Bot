@@ -1,0 +1,8 @@
+extends: pilot.yaml
+
+strategy:
+  name: orb_v1
+  params:
+    or_end: "09:30"       # 15-min opening range (09:15..09:25)
+    entry_until: "11:30"  # breakout window
+    require_regime: true

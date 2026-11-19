@@ -58,6 +58,7 @@ class OrderIntent:
     product: Literal["MIS", "CNC"] = "MIS"
     reason: str = ""
     tag: str = ""
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

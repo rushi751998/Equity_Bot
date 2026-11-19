@@ -26,6 +26,7 @@ from tfalgo.indicators.features import (
 from tfalgo.indicators.patterns import evaluate_patterns
 from tfalgo.regime.score import RegimeSnapshot, classify_regime
 from tfalgo.strategy.base import (
+    STRATEGIES,
     LifecycleState,
     PortfolioSnapshot,
     PositionState,
@@ -101,22 +102,34 @@ def _prep_daily(df5: pl.DataFrame, cfg: AppConfig, cal: TradingCalendar) -> pl.D
     d1 = d1.with_columns(pl.Series("avail_date", avail))
     return daily_features(d1, cfg)
 
+@dataclass(frozen=True)
+class PreparedMarketData:
+    """Precomputed multi-timeframe features reusable across 1000+ strategy runs."""
 
-def run_backtest_from_frames(
+    daily_map: dict[str, pl.DataFrame]
+    hourly_map: dict[str, pl.DataFrame]
+    m15_map: dict[str, pl.DataFrame]
+    m5_map: dict[str, pl.DataFrame]
+    bench_d1: pl.DataFrame
+    panel: pl.DataFrame
+    all_dates: list[date]
+    daily_by_avail: dict[str, dict[date, dict[str, Any]]]
+    avail_lists: dict[str, list[date]]
+    h_ends: dict[str, list[datetime]]
+    m15_ends: dict[str, list[datetime]]
+    m5_by_date: dict[date, list[tuple[datetime, str, dict[str, Any]]]]
+    bench_by_avail: dict[date, dict[str, Any]]
+    panel_by_date: dict[date, dict[str, dict[str, Any]]]
+
+
+def prepare_market_data(
     cfg: AppConfig,
     frames_5m: dict[str, pl.DataFrame],
     bench_5m: pl.DataFrame,
     cal: TradingCalendar,
-    output_dir: Path | None = None,
-) -> BacktestResult:
-    """Pure in-memory runner (used by both BacktestEngine and synthetic tests)."""
-    run_id = f"run_{cfg.snapshot_hash()}_{cfg.run.seed}"
-    out_dir = output_dir or (cfg.storage.output_dir / run_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
+) -> PreparedMarketData:
     cons = build_constituents(cfg, available=frames_5m.keys())
     bench_d1 = _prep_daily(bench_5m, cfg, cal) if not bench_5m.is_empty() else pl.DataFrame()
-
     daily_map: dict[str, pl.DataFrame] = {}
     hourly_map: dict[str, pl.DataFrame] = {}
     m15_map: dict[str, pl.DataFrame] = {}
@@ -129,72 +142,78 @@ def run_backtest_from_frames(
         if not bench_d1.is_empty():
             d1 = with_relative_strength(d1, bench_d1, cfg)
         daily_map[sym] = d1
-
         h60 = resample(df5, "60m", session_open=cfg.session.open, session_close=cfg.session.close, tz=cfg.run.timezone)
         h60 = h60.with_columns(in_stats=(pl.col("n_bars") == 12) if cfg.hourly.partial_bar_policy == "price_only" else pl.lit(True))
         hourly_map[sym] = hourly_features(h60, cfg)
-
         m15 = resample(df5, "15m", session_open=cfg.session.open, session_close=cfg.session.close, tz=cfg.run.timezone)
         m15_map[sym] = m15_features(m15, cfg)
         m5_map[sym] = intraday_features(df5.sort("ts"), cfg)
 
     panel = build_panel(daily_map, cons, cfg) if daily_map else pl.DataFrame()
     all_dates = sorted({d for df5 in m5_map.values() for d in df5["ts"].dt.date().to_list()})
-
-    ledger = PortfolioLedger(cfg.capital.initial, cfg.capital.sale_proceeds)
-    broker = SimBroker(cfg)
-    states: dict[str, SymbolState] = {s: SymbolState(s) for s in m5_map}
-    active_meta: dict[str, ActiveTradeMeta] = {}
-    pending: dict[str, PendingOrder] = {}
-    equity_rows: list[dict[str, Any]] = []
-    event_lines: list[str] = []
-    last_prices: dict[str, float] = {}
-
-    # Index daily lookup by avail_date
-    bench_by_avail: dict[date, dict[str, Any]] = {}
-    if not bench_d1.is_empty():
-        for row in bench_d1.iter_rows(named=True):
-            bench_by_avail[row["avail_date"]] = row
-
-    panel_by_date: dict[date, dict[str, dict[str, Any]]] = {}
-    if not panel.is_empty():
-        for row in panel.iter_rows(named=True):
-            panel_by_date.setdefault(row["date"], {})[row["symbol"]] = row
-
-    daily_by_avail: dict[str, dict[date, dict[str, Any]]] = {}
-    avail_lists: dict[str, list[date]] = {}
-    for sym, d1 in daily_map.items():
-        daily_by_avail[sym] = {row["avail_date"]: row for row in d1.iter_rows(named=True)}
-        avail_lists[sym] = d1["avail_date"].to_list()
-
-    h_ends = {sym: df["bar_end"].to_list() for sym, df in hourly_map.items()}
-    m15_ends = {sym: df["bar_end"].to_list() for sym, df in m15_map.items()}
+    daily_by_avail = {s: {r["avail_date"]: r for r in d1.iter_rows(named=True)} for s, d1 in daily_map.items()}
+    avail_lists = {s: d1["avail_date"].to_list() for s, d1 in daily_map.items()}
+    h_ends = {s: df["bar_end"].to_list() for s, df in hourly_map.items()}
+    m15_ends = {s: df["bar_end"].to_list() for s, df in m15_map.items()}
     m5_by_date: dict[date, list[tuple[datetime, str, dict[str, Any]]]] = {}
     for sym, m5 in m5_map.items():
         for row in m5.iter_rows(named=True):
             m5_by_date.setdefault(row["ts"].date(), []).append((row["ts"], sym, row))
     for bars in m5_by_date.values():
         bars.sort(key=lambda x: (x[0], x[1]))
+    bench_by_avail = {r["avail_date"]: r for r in bench_d1.iter_rows(named=True)} if not bench_d1.is_empty() else {}
+    panel_by_date: dict[date, dict[str, dict[str, Any]]] = {}
+    if not panel.is_empty():
+        for row in panel.iter_rows(named=True):
+            panel_by_date.setdefault(row["date"], {})[row["symbol"]] = row
+    return PreparedMarketData(
+        daily_map, hourly_map, m15_map, m5_map, bench_d1, panel, all_dates,
+        daily_by_avail, avail_lists, h_ends, m15_ends, m5_by_date, bench_by_avail, panel_by_date,
+    )
 
+def run_backtest_from_frames(
+    cfg: AppConfig,
+    frames_5m: dict[str, pl.DataFrame],
+    bench_5m: pl.DataFrame,
+    cal: TradingCalendar,
+    output_dir: Path | None = None,
+    prepared: PreparedMarketData | None = None,
+) -> BacktestResult:
+    """Pure in-memory runner (used by both BacktestEngine and synthetic tests)."""
+    run_id = f"run_{cfg.snapshot_hash()}_{cfg.run.seed}"
+    out_dir = output_dir or (cfg.storage.output_dir / run_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    data = prepared or prepare_market_data(cfg, frames_5m, bench_5m, cal)
+    strategy = STRATEGIES.get(cfg.strategy.name)()
     stop_rule = STOP_RULES.get(cfg.strategy.stop)()
-    sizer = SIZING_RULES.get("risk_cap_liquidity")()
-    log.info("Starting backtest: %d trading days, %d symbols", len(all_dates), len(m5_map))
 
-    for idx_d, cur_date in enumerate(all_dates):
-        if idx_d % 50 == 0 or idx_d == len(all_dates) - 1:
-            log.info("Progress: %d/%d days (%s) | trades=%d", idx_d + 1, len(all_dates), cur_date, len(ledger.trades))
+    ledger = PortfolioLedger(cfg.capital.initial, cfg.capital.sale_proceeds)
+    broker = SimBroker(cfg)
+    states: dict[str, SymbolState] = {s: SymbolState(s) for s in data.m5_map}
+    active_meta: dict[str, ActiveTradeMeta] = {}
+    pending: dict[str, PendingOrder] = {}
+    equity_rows: list[dict[str, Any]] = []
+    event_lines: list[str] = []
+    last_prices: dict[str, float] = {}
+
+    log.info("Starting backtest: %d trading days, %d symbols", len(data.all_dates), len(data.m5_map))
+
+    for idx_d, cur_date in enumerate(data.all_dates):
+        if idx_d % 50 == 0 or idx_d == len(data.all_dates) - 1:
+            log.info("Progress: %d/%d days (%s) | trades=%d", idx_d + 1, len(data.all_dates), cur_date, len(ledger.trades))
         ledger.settle_t1(cur_date)
-        next_td = all_dates[idx_d + 1] if idx_d + 1 < len(all_dates) else None
+        next_td = data.all_dates[idx_d + 1] if idx_d + 1 < len(data.all_dates) else None
 
         # Pre-open regime for cur_date (data <= D-1 via avail_date == cur_date)
-        b_row = bench_by_avail.get(cur_date)
-        p_rows = panel_by_date.get(cur_date, {})
+        b_row = data.bench_by_avail.get(cur_date)
+        p_rows = data.panel_by_date.get(cur_date, {})
         if b_row is not None:
             elig_rows = [r for r in p_rows.values() if r["eligible"]]
             if elig_rows:
                 above50 = sum(
                     1 for r in elig_rows
-                    if (d_row := daily_by_avail[r["symbol"]].get(cur_date)) and d_row.get("sma50") and d_row["close"] > d_row["sma50"]
+                    if (d_row := data.daily_by_avail[r["symbol"]].get(cur_date)) and d_row.get("sma50") and d_row["close"] > d_row["sma50"]
                 )
                 breadth_pct = 100.0 * above50 / len(elig_rows)
             else:
@@ -215,8 +234,7 @@ def run_backtest_from_frames(
             cd = max(0, st.cooldown_days_left - 1) if st.cooldown_days_left > 0 else 0
             states[sym] = SymbolState(**{**st.__dict__, "entries_today": 0, "cooldown_days_left": cd})
 
-        # Watchlist: symbols passing daily gate & having valid hourly setup
-        day_bars = m5_by_date.get(cur_date, [])
+        day_bars = data.m5_by_date.get(cur_date, [])
         pat_cache: dict[str, tuple[str | None, float]] = {}
 
         day_start_eq = ledger.cash + sum(
@@ -329,84 +347,66 @@ def run_backtest_from_frames(
                     states[sym] = SymbolState(symbol=sym, lifecycle=LifecycleState.IDLE, entries_today=st.entries_today)
                 continue
 
-            # 4. Entry signal generation (inside entry window, IDLE/ARMED)
-            if (
-                st.position is None
-                and sym not in pending
-                and cfg.trigger.window.entry_from <= t_str <= cfg.trigger.window.entry_until
-            ):
-                d_row = daily_by_avail.get(sym, {}).get(cur_date)
+            # 4. Strategy signal generation (delegated to registered Strategy)
+            if st.position is None and sym not in pending:
+                d_row = data.daily_by_avail.get(sym, {}).get(cur_date)
                 p_row = p_rows.get(sym)
-                if d_row and p_row and p_row["eligible"] and d_row.get("above_slow_dma") and reg.label != "LOW":
-                    h_idx = bisect_right(h_ends[sym], ts)
-                    m15_idx = bisect_right(m15_ends[sym], ts)
-                    if h_idx > 0 and m15_idx > 0:
-                        h_last = hourly_map[sym].row(h_idx - 1, named=True)
-                        m15_done = m15_map[sym].slice(0, m15_idx)
-                        m15_last = m15_done.row(m15_idx - 1, named=True)
-                        if h_last.get("leg_valid") and h_last.get("pullback_low") and m15_last.get("atr"):
-                            atr15 = float(m15_last["atr"])
-                            flag_hi = find_flag_high(m15_done, atr15, cfg)
-                            ref_hi = flag_hi or float(h_last["leg_high"])
-                            tl, zf, zc = compute_entry_zone(ref_hi, atr15, cfg)
-                            close_px = float(bar["close"])
-                            if close_px > tl and close_px >= zf:
-                                if sym not in pat_cache:
-                                    d_idx = bisect_right(avail_lists[sym], cur_date)
-                                    pat_cache[sym] = evaluate_patterns(daily_map[sym].slice(0, d_idx), cfg.score.patterns)
-                                pat_name, pat_q = pat_cache[sym]
-                                h_atr = float(h_last["atr"] or atr15 * 2.0)
-                                ext_h = (close_px - float(h_last[f"ema{cfg.trend.ribbon_emas[-1]}"] or close_px)) / max(h_atr, 1e-6)
-                                rng_b = float(bar["high"]) - float(bar["low"])
-                                c_pos = (close_px - float(bar["low"])) / rng_b if rng_b > 0 else 0.5
-                                ctx = {
-                                    "eligible": True, "above_200dma": True, "regime_label": reg.label,
-                                    "adtv_cr": float(p_row["adtv_cr"] or 0.0), "atr_pct": float(p_row["atr_pct"] or 0.0),
-                                    "dma_stack_full": bool(d_row.get("dma_stack_full")),
-                                    "dma_stack_partial": bool(d_row.get("dma_stack_partial")),
-                                    "slow_dma_rising": bool(d_row.get("slow_dma_rising")),
-                                    "rs_pct": p_row.get("rs_pct"),
-                                    "pct_below_52w_high": d_row.get("pct_below_52w_high"),
-                                    "ribbon_stack_ok": bool(h_last.get("rib_stack_ok")),
-                                    "ribbon_fanning": bool(h_last.get("rib_fanning")),
-                                    "pattern_quality": pat_q,
-                                    "depth_hatr": h_last.get("pullback_depth_hatr"),
-                                    "depth_leg_frac": 0.25,
-                                    "hourly_closes_below_ema20": 0 if not h_last.get("close_below_slow_ema") else 1,
-                                    "vol_contraction_ratio": 0.7,
-                                    "range_ratio_3bar": float(h_last.get("range_ratio") or 1.0),
-                                    "rvol_pace": float(bar.get("rvol_pace") or 1.5),
-                                    "close_in_bar_range": c_pos,
-                                    "extension_hatr": ext_h,
-                                    "gap_daily_atr": 0.5,
-                                    "stock_er": d_row.get("er"),
-                                }
-                                veto_ok, v_reasons = evaluate_vetoes(ctx, cfg)
-                                sc, zone, z_fac = compute_entry_score(ctx, cfg)
-                                if veto_ok and zone != "none":
-                                    stop_res = stop_rule.compute(close_px, float(h_last["pullback_low"]), atr15, h_atr, cfg)
-                                    if stop_res["valid"]:
-                                        throt = is_throttle_active(ledger.closed_money_rs, False, cfg)
-                                        adv20 = float(p_row["adtv_cr"] or 20.0) * 1e7 / max(close_px, 1.0)
-                                        sz = sizer.size(day_start_eq, close_px, stop_res["stop_price"], adv20, reg.multiplier, 0.5 if throt else 1.0, z_fac, cfg)
-                                        open_pos_cnt = sum(1 for s in states.values() if s.position is not None)
-                                        heat = sum(open_risk(s.position.tranches, s.position.current_stop) for s in states.values() if s.position is not None)
-                                        snap_p = PortfolioSnapshot(day_start_eq, ledger.cash, open_pos_cnt, heat, 0.0, 0.0, entries_today_port, {}, throt)
-                                        p_ok, _ = portfolio_allows_entry(st, snap_p, p_row.get("sector"), 0.0, sz["tranche1_qty"] * sz["risk_per_share"], cfg)
-                                        if p_ok and sz["tranche1_qty"] > 0:
-                                            pending[sym] = PendingOrder(
-                                                symbol=sym, side="BUY", qty=sz["tranche1_qty"],
-                                                product="MIS", reason="entry_signal",
-                                                bars_left=cfg.costs.slippage.max_fill_bars, is_entry=True,
-                                                meta_ctx={
-                                                    "swing_low": float(h_last["pullback_low"]), "atr15": atr15,
-                                                    "hourly_atr": h_atr, "planned_full_qty": sz["planned_full_qty"],
-                                                    "risk_budget": sz["risk_budget_inr"], "planned_full_risk": sz["planned_full_risk_inr"],
-                                                    "entry_score": sc, "score_zone": zone,
-                                                    "pattern": pat_name, "pattern_quality": pat_q,
-                                                    "bound_constraint": sz["bound_constraint"],
-                                                },
-                                            )
+                h_idx = bisect_right(data.h_ends[sym], ts)
+                m15_idx = bisect_right(data.m15_ends[sym], ts)
+                if d_row and p_row and h_idx > 0 and m15_idx > 0:
+                    h_last = data.hourly_map[sym].row(h_idx - 1, named=True)
+                    m15_done = data.m15_map[sym].slice(0, m15_idx)
+                    m15_last = m15_done.row(m15_idx - 1, named=True)
+                    atr15 = float(m15_last.get("atr") or 0.0)
+                    h_atr = float(h_last.get("atr") or atr15 * 2.0)
+                    flag_hi = find_flag_high(m15_done, atr15, cfg) if atr15 > 0 else None
+                    if sym not in pat_cache:
+                        d_idx = bisect_right(data.avail_lists[sym], cur_date)
+                        pat_cache[sym] = evaluate_patterns(data.daily_map[sym].slice(0, d_idx), cfg.score.patterns)
+                    pat_name, pat_q = pat_cache[sym]
+                    close_px = float(bar["close"])
+                    rng_b = float(bar["high"]) - float(bar["low"])
+                    ext_h = (close_px - float(h_last.get(f"ema{cfg.trend.ribbon_emas[-1]}") or close_px)) / max(h_atr, 1e-6)
+                    ctx = {
+                        "ts": ts, "bar_time_str": t_str, "bar_open": float(bar["open"]),
+                        "bar_high": float(bar["high"]), "bar_low": float(bar["low"]),
+                        "bar_close": close_px, "bar_volume": float(bar["volume"]),
+                        "eligible": bool(p_row["eligible"]), "above_200dma": bool(d_row.get("above_slow_dma")),
+                        "regime_label": reg.label, "regime_mult": reg.multiplier,
+                        "adtv_cr": float(p_row["adtv_cr"] or 0.0), "atr_pct": float(p_row["atr_pct"] or 0.0),
+                        "adv20": float(p_row["adtv_cr"] or 20.0) * 1e7 / max(close_px, 1.0),
+                        "dma_stack_full": bool(d_row.get("dma_stack_full")),
+                        "dma_stack_partial": bool(d_row.get("dma_stack_partial")),
+                        "slow_dma_rising": bool(d_row.get("slow_dma_rising")),
+                        "rs_pct": p_row.get("rs_pct"), "pct_below_52w_high": d_row.get("pct_below_52w_high"),
+                        "leg_valid": bool(h_last.get("leg_valid")), "pullback_low": h_last.get("pullback_low"),
+                        "pullback_high": h_last.get("leg_high"), "flag_high": flag_hi,
+                        "atr15": atr15, "hourly_atr": h_atr,
+                        "ribbon_stack_ok": bool(h_last.get("rib_stack_ok")), "ribbon_fanning": bool(h_last.get("rib_fanning")),
+                        "pattern_name": pat_name, "pattern_quality": pat_q,
+                        "depth_hatr": h_last.get("pullback_depth_hatr"), "depth_leg_frac": 0.25,
+                        "hourly_closes_below_ema20": 0 if not h_last.get("close_below_slow_ema") else 1,
+                        "vol_contraction_ratio": 0.7, "range_ratio_3bar": float(h_last.get("range_ratio") or 1.0),
+                        "rvol_pace": float(bar.get("rvol_pace") or 1.5),
+                        "close_in_bar_range": (close_px - float(bar["low"])) / rng_b if rng_b > 0 else 0.5,
+                        "extension_hatr": ext_h, "gap_daily_atr": 0.5, "stock_er": d_row.get("er"),
+                    }
+                    throt = is_throttle_active(ledger.closed_money_rs, False, cfg)
+                    open_pos_cnt = sum(1 for s in states.values() if s.position is not None)
+                    heat = sum(open_risk(s.position.tranches, s.position.current_stop) for s in states.values() if s.position is not None)
+                    snap_p = PortfolioSnapshot(day_start_eq, ledger.cash, open_pos_cnt, heat, 0.0, 0.0, entries_today_port, {}, throt)
+                    new_st, intents = strategy.on_bar(st, ctx, snap_p, cfg)
+                    states[sym] = new_st
+                    for intent in intents:
+                        if intent.side == "BUY" and intent.qty > 0:
+                            rps = intent.meta.get("risk_per_share") or max(close_px * 0.03, 0.05)
+                            p_ok, _ = portfolio_allows_entry(st, snap_p, p_row.get("sector"), 0.0, intent.qty * rps, cfg)
+                            if p_ok:
+                                pending[sym] = PendingOrder(
+                                    symbol=sym, side="BUY", qty=intent.qty, product=intent.product,
+                                    reason=intent.reason, bars_left=cfg.costs.slippage.max_fill_bars,
+                                    is_entry=True, meta_ctx=intent.meta or None,
+                                )
 
         # End-of-day equity snapshot
         mtm = ledger.cash + sum(
