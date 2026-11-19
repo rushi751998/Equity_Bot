@@ -42,6 +42,7 @@ from tfalgo.strategy.sizing import SIZING_RULES, STOP_RULES
 from tfalgo.strategy.trigger import compute_entry_zone, find_flag_high
 from tfalgo.universe.constituents import build_constituents
 from tfalgo.universe.filters import build_panel
+from tfalgo.backtest.metrics import compute_trade_metrics, format_trade_summary
 from tfalgo.backtest.portfolio import ActiveTradeMeta, PortfolioLedger
 
 log = logging.getLogger(__name__)
@@ -429,16 +430,7 @@ def run_backtest_from_frames(
         fills_df.write_csv(out_dir / "fills.csv")
     (out_dir / "events.log").write_text("\n".join(event_lines), encoding="utf-8")
 
-    n_trades = len(ledger.trades)
-    wins = sum(1 for t in ledger.trades if t.net_pnl > 0)
-    win_rate = (wins / n_trades * 100.0) if n_trades else 0.0
-    exp_r = (sum(t.money_r for t in ledger.trades) / n_trades) if n_trades else 0.0
-    cap_bound = sum(1 for t in ledger.trades if t.bound_constraint == "cap")
-    summary = (
-        f"{LIMITATIONS_HEADER}\n"
-        f"Run ID: {run_id}\n"
-        f"Trades: {n_trades} | Win rate: {win_rate:.1f}% | Expectancy: {exp_r:.3f}R | "
-        f"25% cap bound: {cap_bound}/{n_trades}\n"
-    )
+    metrics = compute_trade_metrics(ledger.trades)
+    summary = f"{LIMITATIONS_HEADER}\nRun ID: {run_id}\n{format_trade_summary(metrics)}\n"
     (out_dir / "summary.txt").write_text(summary, encoding="utf-8")
     return BacktestResult(run_id, out_dir, trades_df, equity_df, summary)

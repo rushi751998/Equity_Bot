@@ -96,3 +96,53 @@ def test_strategy_extensibility_and_prepared_reuse(tmp_path):
     prep = prepare_market_data(cfg, {"AAA": s1}, bench, cal)
     res = run_backtest_from_frames(cfg, {"AAA": s1}, bench, cal, output_dir=tmp_path / "dum", prepared=prep)
     assert res.equity.height > 0
+
+def test_trade_metrics_all_21_fields():
+    from tfalgo.backtest.metrics import compute_trade_metrics, format_trade_summary
+    from tfalgo.backtest.portfolio import TradeRecord
+
+    t0 = datetime(2024, 1, 2, 9, 30, tzinfo=IST)
+
+    def _tr(tid: int, pnl: float, mr: float, days: int, bound: str = "risk") -> TradeRecord:
+        return TradeRecord(
+            trade_id=tid, symbol="AAA", entry_ts=t0, exit_ts=t0, product_path="MIS",
+            tranche_fills=1, avg_entry=100.0, avg_exit=100.0, qty_peak=10,
+            initial_stop=97.0, stop_source="swing", risk_per_share=3.0,
+            planned_full_risk_inr=500.0, price_r_max=mr, mae_r=0.0, mfe_r=mr,
+            gross_pnl=pnl, fees=0.0, slippage_cost=0.0, net_pnl=pnl, money_r=mr,
+            exit_reason="stop_hit", regime_at_entry="HIGH", entry_score=80.0,
+            score_zone="full", pattern="vcp", pattern_quality=0.8, add_scores="",
+            hold_score_min=80, time_stop_flag=False, bound_constraint=bound,
+            hold_days=days, gap_loss_flag=False,
+        )
+
+    trades = [
+        _tr(1, 1000.0, 2.0, 4, "cap"),
+        _tr(2, 500.0, 1.0, 2),
+        _tr(3, -300.0, -0.6, 1),
+        _tr(4, 0.0, 0.0, 3),     # breakeven counts as losing
+        _tr(5, -200.0, -0.4, 2),
+    ]
+    m = compute_trade_metrics(trades)
+    assert m["total_closed_campaigns"] == 5
+    assert m["winning_trades"] == 2
+    assert m["losing_trades"] == 3
+    assert m["win_rate_pct"] == pytest.approx(40.0)
+    assert m["avg_win_inr"] == pytest.approx(750.0)
+    assert m["avg_loss_inr"] == pytest.approx(-500.0 / 3.0)
+    assert m["payoff_ratio"] == pytest.approx(4.5)
+    assert m["expectancy_inr"] == pytest.approx(200.0)
+    assert m["expectancy_r"] == pytest.approx(0.4)
+    assert m["gross_profit_inr"] == pytest.approx(1500.0)
+    assert m["gross_loss_inr"] == pytest.approx(-500.0)
+    assert m["profit_factor"] == pytest.approx(3.0)
+    assert m["best_trade_inr"] == pytest.approx(1000.0)
+    assert m["best_trade_r"] == pytest.approx(2.0)
+    assert m["worst_trade_inr"] == pytest.approx(-300.0)
+    assert m["worst_trade_r"] == pytest.approx(-0.6)
+    assert m["max_consecutive_wins"] == 2
+    assert m["max_consecutive_losses"] == 3
+    assert m["avg_hold_days_winners"] == pytest.approx(3.0)
+    assert m["avg_hold_days_losers"] == pytest.approx(2.0)
+    assert m["avg_hold_days_all"] == pytest.approx(2.4)
+    assert "Profit Factor" in format_trade_summary(m)
