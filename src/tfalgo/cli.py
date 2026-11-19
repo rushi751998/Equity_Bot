@@ -116,8 +116,9 @@ def backtest_batch(
     res = run_batch(configs, store, cal, outdir)
     with pl.Config(tbl_cols=20, tbl_rows=50):
         typer.echo(str(res.comparison))
-    typer.echo(f"Report HTML: {res.report_html}")
-    
+    typer.echo(f"Report HTML   : {res.report_html}")
+    typer.echo(f"Simulator HTML: {res.simulator_html}")
+
 if __name__ == "__main__":
     logging.basicConfig()
     app()

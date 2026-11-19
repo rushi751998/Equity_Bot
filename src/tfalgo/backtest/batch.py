@@ -12,6 +12,7 @@ import polars as pl
 
 from tfalgo.backtest.engine import PreparedMarketData, prepare_market_data, run_backtest_from_frames
 from tfalgo.backtest.metrics import compute_trade_metrics
+from tfalgo.backtest.simulator import build_portfolio_simulator_html
 from tfalgo.calendar import TradingCalendar
 from tfalgo.config import AppConfig
 from tfalgo.data.store import BarStore
@@ -22,6 +23,7 @@ class BatchResult:
     output_dir: Path
     comparison: pl.DataFrame
     report_html: Path
+    simulator_html: Path
 
 
 def compute_equity_metrics(equity_df: pl.DataFrame) -> dict[str, Any]:
@@ -101,6 +103,7 @@ def run_batch_from_frames(
     chart_blocks: list[str] = []
     eq_curves: list[np.ndarray] = []
     common_dates: list[str] = []
+    sim_payload: list[dict[str, Any]] = []
 
     for label, cfg in configs:
         res = run_backtest_from_frames(
@@ -149,6 +152,20 @@ def run_batch_from_frames(
         if em["equities"]:
             eq_curves.append(np.asarray(em["equities"], dtype=np.float64))
             common_dates = em["dates"]
+
+        eq_arr = np.asarray(em["equities"], dtype=np.float64) if em["equities"] else np.array([cfg.capital.initial])
+        d_rets = [0.0] + (np.diff(eq_arr) / np.where(eq_arr[:-1] > 0, eq_arr[:-1], 1.0)).tolist() if len(eq_arr) > 1 else [0.0]
+        t_list = (
+            [{"net_pnl": float(r["net_pnl"]), "money_r": float(r["money_r"])} for r in res.trades.iter_rows(named=True)]
+            if not res.trades.is_empty() else []
+        )
+        sim_payload.append({
+            "name": label,
+            "base_capital": float(cfg.capital.initial),
+            "dates": em["dates"],
+            "daily_returns": d_rets,
+            "trades": t_list,
+        })
 
     # Equal-weight combined portfolio across all strategies
     if len(eq_curves) >= 2 and all(len(c) == len(eq_curves[0]) for c in eq_curves):
@@ -201,7 +218,8 @@ def run_batch_from_frames(
     )
     report_path = output_dir / "batch_report.html"
     report_path.write_text(html, encoding="utf-8")
-    return BatchResult(output_dir, comp_df, report_path)
+    sim_path = build_portfolio_simulator_html(sim_payload, base_cfg.capital.initial, output_dir / "portfolio_simulator.html")
+    return BatchResult(output_dir, comp_df, report_path, sim_path)
 
 
 def run_batch(config_paths: list[Path], store: BarStore, cal: TradingCalendar, output_dir: Path) -> BatchResult:
