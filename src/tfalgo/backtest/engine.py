@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -161,13 +162,27 @@ def run_backtest_from_frames(
             panel_by_date.setdefault(row["date"], {})[row["symbol"]] = row
 
     daily_by_avail: dict[str, dict[date, dict[str, Any]]] = {}
+    avail_lists: dict[str, list[date]] = {}
     for sym, d1 in daily_map.items():
         daily_by_avail[sym] = {row["avail_date"]: row for row in d1.iter_rows(named=True)}
+        avail_lists[sym] = d1["avail_date"].to_list()
+
+    h_ends = {sym: df["bar_end"].to_list() for sym, df in hourly_map.items()}
+    m15_ends = {sym: df["bar_end"].to_list() for sym, df in m15_map.items()}
+    m5_by_date: dict[date, list[tuple[datetime, str, dict[str, Any]]]] = {}
+    for sym, m5 in m5_map.items():
+        for row in m5.iter_rows(named=True):
+            m5_by_date.setdefault(row["ts"].date(), []).append((row["ts"], sym, row))
+    for bars in m5_by_date.values():
+        bars.sort(key=lambda x: (x[0], x[1]))
 
     stop_rule = STOP_RULES.get(cfg.strategy.stop)()
     sizer = SIZING_RULES.get("risk_cap_liquidity")()
+    log.info("Starting backtest: %d trading days, %d symbols", len(all_dates), len(m5_map))
 
     for idx_d, cur_date in enumerate(all_dates):
+        if idx_d % 50 == 0 or idx_d == len(all_dates) - 1:
+            log.info("Progress: %d/%d days (%s) | trades=%d", idx_d + 1, len(all_dates), cur_date, len(ledger.trades))
         ledger.settle_t1(cur_date)
         next_td = all_dates[idx_d + 1] if idx_d + 1 < len(all_dates) else None
 
@@ -201,12 +216,8 @@ def run_backtest_from_frames(
             states[sym] = SymbolState(**{**st.__dict__, "entries_today": 0, "cooldown_days_left": cd})
 
         # Watchlist: symbols passing daily gate & having valid hourly setup
-        day_bars: list[tuple[datetime, str, dict[str, Any]]] = []
-        for sym, m5 in m5_map.items():
-            sub = m5.filter(pl.col("ts").dt.date() == cur_date)
-            for row in sub.iter_rows(named=True):
-                day_bars.append((row["ts"], sym, row))
-        day_bars.sort(key=lambda x: (x[0], x[1]))
+        day_bars = m5_by_date.get(cur_date, [])
+        pat_cache: dict[str, tuple[str | None, float]] = {}
 
         day_start_eq = ledger.cash + sum(
             states[s].position.total_qty * last_prices.get(s, states[s].position.avg_entry)
@@ -327,11 +338,12 @@ def run_backtest_from_frames(
                 d_row = daily_by_avail.get(sym, {}).get(cur_date)
                 p_row = p_rows.get(sym)
                 if d_row and p_row and p_row["eligible"] and d_row.get("above_slow_dma") and reg.label != "LOW":
-                    h_done = hourly_map[sym].filter(pl.col("bar_end") <= ts)
-                    m15_done = m15_map[sym].filter(pl.col("bar_end") <= ts)
-                    if not h_done.is_empty() and not m15_done.is_empty():
-                        h_last = h_done.tail(1).to_dicts()[0]
-                        m15_last = m15_done.tail(1).to_dicts()[0]
+                    h_idx = bisect_right(h_ends[sym], ts)
+                    m15_idx = bisect_right(m15_ends[sym], ts)
+                    if h_idx > 0 and m15_idx > 0:
+                        h_last = hourly_map[sym].row(h_idx - 1, named=True)
+                        m15_done = m15_map[sym].slice(0, m15_idx)
+                        m15_last = m15_done.row(m15_idx - 1, named=True)
                         if h_last.get("leg_valid") and h_last.get("pullback_low") and m15_last.get("atr"):
                             atr15 = float(m15_last["atr"])
                             flag_hi = find_flag_high(m15_done, atr15, cfg)
@@ -339,8 +351,10 @@ def run_backtest_from_frames(
                             tl, zf, zc = compute_entry_zone(ref_hi, atr15, cfg)
                             close_px = float(bar["close"])
                             if close_px > tl and close_px >= zf:
-                                d_hist = daily_map[sym].filter(pl.col("avail_date") <= cur_date)
-                                pat_name, pat_q = evaluate_patterns(d_hist, cfg.score.patterns)
+                                if sym not in pat_cache:
+                                    d_idx = bisect_right(avail_lists[sym], cur_date)
+                                    pat_cache[sym] = evaluate_patterns(daily_map[sym].slice(0, d_idx), cfg.score.patterns)
+                                pat_name, pat_q = pat_cache[sym]
                                 h_atr = float(h_last["atr"] or atr15 * 2.0)
                                 ext_h = (close_px - float(h_last[f"ema{cfg.trend.ribbon_emas[-1]}"] or close_px)) / max(h_atr, 1e-6)
                                 rng_b = float(bar["high"]) - float(bar["low"])
