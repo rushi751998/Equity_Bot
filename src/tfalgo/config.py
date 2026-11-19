@@ -315,6 +315,176 @@ class ChopConfig(_Base):
     efficiency: ChopEfficiencyConfig = ChopEfficiencyConfig()
     time_stop: ChopTimeStopConfig = ChopTimeStopConfig()
 
+class TriggerWindowConfig(_Base):
+    observe_from: str = "09:15"
+    entry_from: str = "09:30"
+    entry_until: str = "10:45"
+
+
+class TriggerConfig(_Base):
+    window: TriggerWindowConfig = TriggerWindowConfig()
+    rvol_pace_min: float = 1.5
+    max_extension_hatr: float = 1.5
+    no_fill_first_minutes: int = Field(2, ge=0)
+
+
+class StopMinDistanceConfig(_Base):
+    atr15_mult: float = 1.0
+    spread_floor_bps: float = 15.0
+
+
+class StopAtrFallbackConfig(_Base):
+    timeframe: Timeframe = "60m"
+    period: int = Field(14, ge=1)
+    mult: float = 3.0
+
+
+class StopFallbackConfig(_Base):
+    type: Literal["fixed_pct", "atr", "skip"] = "fixed_pct"
+    fixed_pct: float = 3.0
+    atr: StopAtrFallbackConfig = StopAtrFallbackConfig()
+
+
+class StopConfig(_Base):
+    mode: Literal["swing_low_with_fallback", "fixed_pct", "atr"] = "swing_low_with_fallback"
+    buffer_atr15: float = 0.10
+    min_distance: StopMinDistanceConfig = StopMinDistanceConfig()
+    max_swing_stop_pct: float = 5.0
+    fallback: StopFallbackConfig = StopFallbackConfig()
+
+
+class SizingConfig(_Base):
+    risk_per_trade_pct: float = 0.5
+    max_position_pct: float = 25.0
+    max_adv_participation_pct: float = 1.0
+    tranches: list[float] = [0.40, 0.40, 0.20]
+
+
+class PullbackAddConfig(_Base):
+    band_emas: list[int] = [9, 15]
+    max_depth_hatr: float = 1.0
+    mini_high_bars: int = Field(3, ge=1)
+
+
+class PyramidConfig(_Base):
+    enabled: bool = True
+    add1_min_r: float = 1.0
+    add2_min_r: float = 2.0
+    max_extension_atr_daily: float = 2.0
+    last_add_time: str = "15:00"
+    types: list[Literal["breakout", "pullback"]] = ["breakout", "pullback"]
+    min_hold_score: float = 60.0
+    pullback_add: PullbackAddConfig = PullbackAddConfig()
+
+
+class PartialsConfig(_Base):
+    enabled: bool = True
+    gate_min_r: float = 3.0
+    ladder: list[float] = [0.25, 0.25]
+    runner_min_frac: float = 0.5
+    min_partial_value_inr: float = 3000.0
+
+
+class ExhaustionConfig(_Base):
+    ext_atr_daily: float = 2.5
+    climax_range_mult: float = 2.0
+    climax_vol_mult: float = 2.5
+    climax_close_lower_frac: float = 0.40
+    parabolic_bb_closes: int = Field(3, ge=1)
+    gapfail_atr: float = 1.5
+    gapfail_minutes: int = Field(30, ge=1)
+
+
+class RunnerConfig(_Base):
+    confirm_closes: int = Field(2, ge=1)
+    daily_trail: str = "ema21"
+    chandelier_atr: float = 3.0
+    climax_sell_frac_of_runner: float = 0.5
+
+
+class ExitsConfig(_Base):
+    partials: PartialsConfig = PartialsConfig()
+    exhaustion: ExhaustionConfig = ExhaustionConfig()
+    runner: RunnerConfig = RunnerConfig()
+
+
+class CarryHoldConfig(_Base):
+    continue_while: str = "daily_close_above_ema21"
+    max_trading_days: int = Field(15, ge=1)
+
+
+class CarryConfig(_Base):
+    enabled: bool = True
+    mis_decision_time: str = "15:10"
+    mis_squareoff_time: str = "15:15"
+    min_open_r: float = 2.0
+    min_close_in_range: float = 0.75
+    min_vol_pace: float = 1.0
+    min_regime: Literal["HIGH", "MEDIUM", "LOW"] = "MEDIUM"
+    trim_pct: float = 0.33
+    hold: CarryHoldConfig = CarryHoldConfig()
+
+
+class ReentryConfig(_Base):
+    max_entries_per_stock_per_day: int = Field(1, ge=1)
+    cooldown_days_after_stop: int = Field(3, ge=0)
+    release_on_new_daily_base: bool = True
+
+
+class RetestEntryConfig(_Base):
+    enabled: bool = True
+    valid_bars: int = Field(6, ge=1)
+
+
+class EntryZoneConfig(_Base):
+    confirm_atr15: float = 0.10
+    chase_atr15: float = 0.25
+    retest_entry: RetestEntryConfig = RetestEntryConfig()
+
+
+class SoftExitConfig(_Base):
+    enabled: bool = True
+    hourly_close_below: str = "ema20"
+    confirm_closes: int = Field(2, ge=1)
+
+
+class BuffersConfig(_Base):
+    entry_zone: EntryZoneConfig = EntryZoneConfig()
+    soft_exit: SoftExitConfig = SoftExitConfig()
+    hard_stop_always_live: bool = True
+
+
+class PortfolioThrottleConfig(_Base):
+    lookback_trades: int = Field(10, ge=1)
+    risk_multiplier: float = 0.5
+    release_after_consecutive_wins: int = Field(2, ge=1)
+
+
+class PortfolioConfig(_Base):
+    max_open_positions: int = Field(6, ge=1)
+    max_heat_pct: float = 3.5
+    max_per_sector: int = Field(2, ge=1)
+    max_corr_20d: float = 0.80
+    max_new_entries_per_day: int = Field(3, ge=1)
+    daily_loss_limit_pct: float = 1.0
+    weekly_loss_limit_pct: float = 3.0
+    ranking: list[str] = ["entry_score", "rs_3m", "rvol_pace"]
+    throttle: PortfolioThrottleConfig = PortfolioThrottleConfig()
+
+
+class StrategyCompositionConfig(_Base):
+    name: str = "trend_pullback_v1"
+    patterns: list[str] = ["vcp", "flat_base"]
+    score_blocks: list[str] = [
+        "trend_quality", "base_pattern", "setup_tightness",
+        "trigger_quality", "regime", "liquidity_range", "penalties",
+    ]
+    vetoes: list[str] = [
+        "liquidity", "regime_low", "close_below_200dma",
+        "extension_gt_2_5_hatr", "stop_too_wide", "data_gaps",
+    ]
+    stop: str = "swing_low_with_fallback"
+    exits: list[str] = ["ladder", "runner", "hold_score", "time_stop", "soft_exit"]
 
 class AppConfig(_Base):
     run: RunConfig
@@ -333,6 +503,20 @@ class AppConfig(_Base):
     score: ScoreConfig = ScoreConfig()
     regime: RegimeConfig = RegimeConfig()
     chop: ChopConfig = ChopConfig()
+    trigger: TriggerConfig = TriggerConfig()
+    stop: StopConfig = StopConfig()
+    sizing: SizingConfig = SizingConfig()
+    pyramid: PyramidConfig = PyramidConfig()
+    exits: ExitsConfig = ExitsConfig()
+    carry: CarryConfig = CarryConfig()
+    reentry: ReentryConfig = ReentryConfig()
+    vetoes: list[str] = [
+        "liquidity", "regime_low", "close_below_200dma",
+        "extension_gt_2_5_hatr", "stop_too_wide", "data_gaps",
+    ]
+    buffers: BuffersConfig = BuffersConfig()
+    portfolio: PortfolioConfig = PortfolioConfig()
+    strategy: StrategyCompositionConfig = StrategyCompositionConfig()
 
     def snapshot_hash(self) -> str:
         """Stable hash of the full config (for run reproducibility)."""

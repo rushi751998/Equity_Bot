@@ -112,3 +112,75 @@ chop:
   breakout_success: {enabled: true, lookback_days: 20, horizon_days: 5, success_r: 1.0, min_events: 8, low_rate: 0.30, high_rate: 0.45}
   efficiency: {enabled: true, period: 10, stock_min: 0.30, index_min: 0.25}
   time_stop: {enabled: true, max_days_to_reach_r: 3, progress_r: 1.0, stall_days: 5, stall_exit_below_r: 3.0}
+
+trigger:
+  window: {observe_from: "09:15", entry_from: "09:30", entry_until: "10:45"}
+  rvol_pace_min: 1.5
+  max_extension_hatr: 1.5
+  no_fill_first_minutes: 2
+
+stop:
+  mode: swing_low_with_fallback
+  buffer_atr15: 0.10
+  min_distance: {atr15_mult: 1.0, spread_floor_bps: 15}
+  max_swing_stop_pct: 5.0
+  fallback: {type: fixed_pct, fixed_pct: 3.0, atr: {timeframe: 60m, period: 14, mult: 3.0}}
+
+sizing:
+  risk_per_trade_pct: 0.5
+  max_position_pct: 25
+  max_adv_participation_pct: 1.0
+  tranches: [0.40, 0.40, 0.20]
+
+pyramid:
+  enabled: true
+  add1_min_r: 1.0
+  add2_min_r: 2.0
+  max_extension_atr_daily: 2.0
+  last_add_time: "15:00"
+  types: [breakout, pullback]
+  min_hold_score: 60
+  pullback_add: {band_emas: [9, 15], max_depth_hatr: 1.0, mini_high_bars: 3}
+
+exits:
+  partials: {enabled: true, gate_min_r: 3.0, ladder: [0.25, 0.25], runner_min_frac: 0.5, min_partial_value_inr: 3000}
+  exhaustion: {ext_atr_daily: 2.5, climax_range_mult: 2.0, climax_vol_mult: 2.5, climax_close_lower_frac: 0.40, parabolic_bb_closes: 3, gapfail_atr: 1.5, gapfail_minutes: 30}
+  runner: {confirm_closes: 2, daily_trail: ema21, chandelier_atr: 3.0, climax_sell_frac_of_runner: 0.5}
+
+carry:
+  enabled: true
+  mis_decision_time: "15:10"
+  mis_squareoff_time: "15:15"
+  min_open_r: 2.0
+  min_close_in_range: 0.75
+  min_vol_pace: 1.0
+  min_regime: MEDIUM
+  trim_pct: 0.33
+  hold: {continue_while: daily_close_above_ema21, max_trading_days: 15}
+
+reentry:
+  max_entries_per_stock_per_day: 1
+  cooldown_days_after_stop: 3
+  release_on_new_daily_base: true
+
+vetoes: [liquidity, regime_low, close_below_200dma, extension_gt_2_5_hatr, stop_too_wide, data_gaps]
+
+buffers:
+  entry_zone: {confirm_atr15: 0.10, chase_atr15: 0.25, retest_entry: {enabled: true, valid_bars: 6}}
+  soft_exit: {enabled: true, hourly_close_below: ema20, confirm_closes: 2}
+  hard_stop_always_live: true
+
+portfolio:
+  max_open_positions: 6
+  max_heat_pct: 3.5
+  max_per_sector: 2
+  max_corr_20d: 0.80
+  max_new_entries_per_day: 3
+  daily_loss_limit_pct: 1.0
+  weekly_loss_limit_pct: 3.0
+  ranking: [entry_score, rs_3m, rvol_pace]
+  throttle: {lookback_trades: 10, risk_multiplier: 0.5, release_after_consecutive_wins: 2}
+
+strategy:
+  name: trend_pullback_v1
+  patterns: [vcp, flat_base]

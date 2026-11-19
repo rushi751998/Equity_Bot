@@ -53,7 +53,12 @@
 - Rvol pace needs a full 20 prior days at that time of day; missing 5m bars are not imputed.
 - `config/pilot.yaml` uses `extends: default.yaml` (deep merge). `sectors.csv` keeps the template
   header; isin left blank (not invented).
-  
+
 ## Phase 2b
 - Regime scoring rescales thresholds dynamically to the active positive-point maximum (`HIGH >= ceil(0.8 * max)`, `MEDIUM >= ceil(0.4 * max)`, else `LOW`). When India VIX is absent or index volume is 0, those components are skipped and a warning is logged once.
 - VCP and Flat Base detectors scan candidate base windows ending at the last completed daily bar (zero lookahead) and return the highest valid quality score in `[0, 1]`. Cup-with-handle and High-tight-flag are registered stubs returning `0.0` in v1. 
+
+
+## Phase 3
+- Tick rounding uses exact `Decimal` arithmetic (`ROUND_CEILING` for buy/trigger prices, `ROUND_FLOOR` for sell/stop prices) to eliminate IEEE-754 float drift on 0.05 multiples.
+- Entry score normalisation (`100 * earned / (100 + enabled_optional_max)`) keeps raw earned points unscaled when no optional feature is enabled (matching Example 8: 81 points -> 81.0, and +4 optional `sector_rs` -> `100 * 85 / 104 = 81.73`).
