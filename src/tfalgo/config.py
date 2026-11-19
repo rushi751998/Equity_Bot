@@ -65,8 +65,8 @@ class CsvProviderConfig(_Base):
     root: Path = Path("data/raw")
     symbol_pattern: str = "{symbol}.csv"
     index_pattern: str = "{index}.csv"
-    # native_timeframe: Timeframe = "5m"
-    native_timeframe: Timeframe = "1m"
+    native_timeframe: Timeframe = "5m"
+    # native_timeframe: Timeframe = "1m"
     index_native_timeframe: Timeframe = "1m"
     columns: CsvColumns = CsvColumns()
     naive_timestamps_tz: str | None = None  # set if files have no UTC offset
@@ -125,6 +125,7 @@ class IndicatorConfig(_Base):
     daily_emas: list[int] = [9, 21]
     volume_avg_days: int = Field(50, ge=1)
     swing_k: int = Field(2, ge=1)
+    rvol_window_days: int = Field(20, ge=1)
 
     @model_validator(mode="after")
     def _rs(self) -> IndicatorConfig:

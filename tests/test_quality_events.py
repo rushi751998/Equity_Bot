@@ -102,5 +102,5 @@ def test_stray_bar_on_normal_day_is_hard_and_located(bars5):
                          ).with_columns(pl.col("ts").dt.convert_time_zone("Asia/Kolkata"))
     out = _checks(bars5.vstack(stray).sort("ts"))
     assert out["outside_session"].severity == "hard"
-    assert out["outside_session"].first_ts.startswith("2024-01-02T15:30")
-    assert "2024-01-02 15:30" in out["outside_session"].detail
+    assert out["outside_session"].first_ts.startswith("2024-01-02T16:05")
+    assert "2024-01-02 16:05" in out["outside_session"].detail

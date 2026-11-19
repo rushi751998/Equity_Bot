@@ -108,8 +108,13 @@ def intraday_features(m5: pl.DataFrame, cfg: AppConfig) -> pl.DataFrame:
     """Adds `rvol_pace` (usable at the bar's end)."""
     open_min = cfg.session.open.hour * 60 + cfg.session.open.minute
     day = m5["ts"].dt.date().cast(pl.Int32).to_numpy()
-    tod = (m5["ts"].dt.hour().cast(pl.Int32) * 60 + m5["ts"].dt.minute().cast(pl.Int32) - open_min).to_numpy()
-    pace = rvol_pace(day, tod, m5["volume"].to_numpy(), window=cfg.indicators.rvol_window_days and 20)
+    tod = (
+        m5["ts"].dt.hour().cast(pl.Int32) * 60
+        + m5["ts"].dt.minute().cast(pl.Int32)
+        - open_min
+    ).to_numpy()
+    window = getattr(cfg.indicators, "rvol_window_days", 20)
+    pace = rvol_pace(day, tod, m5["volume"].to_numpy(), window=window)
     return m5.with_columns(_f("rvol_pace", pace))
 
 
