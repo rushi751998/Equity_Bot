@@ -1,0 +1,21 @@
+broker: zerodha
+as_of: 2026-11-18
+delivery:
+  brokerage: {type: flat, value: 0.0}
+  stt_buy_pct: 0.100
+  stt_sell_pct: 0.100
+  exch_txn_pct: 0.00307
+  sebi_per_crore: 10
+  stamp_buy_pct: 0.015
+  gst_pct: 18
+  dp_per_scrip_sell_incl_gst: 15.34
+intraday:
+  brokerage: {type: min_of, flat: 20, pct: 0.03}
+  stt_sell_pct: 0.025
+  exch_txn_pct: 0.00307
+  sebi_per_crore: 10
+  stamp_buy_pct: 0.003
+  gst_pct: 18
+conversion:
+  fee_flat: 0.0
+  lots_charged_as: delivery

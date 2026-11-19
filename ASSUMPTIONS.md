@@ -62,3 +62,7 @@
 ## Phase 3
 - Tick rounding uses exact `Decimal` arithmetic (`ROUND_CEILING` for buy/trigger prices, `ROUND_FLOOR` for sell/stop prices) to eliminate IEEE-754 float drift on 0.05 multiples.
 - Entry score normalisation (`100 * earned / (100 + enabled_optional_max)`) keeps raw earned points unscaled when no optional feature is enabled (matching Example 8: 81 points -> 81.0, and +4 optional `sector_rs` -> `100 * 85 / 104 = 81.73`).
+
+## Phase 4
+- `spread_est_bps` in `NextOpenSlippageFillModel` is estimated as `0.25 * (bar_high - bar_low) / bar_open * 10_000` (with `max(min_bps, 0.5 * spread_est_bps)`), because no 1m or bid/ask tick data is available.
+- Zerodha DP charge (`Rs 15.34` incl. GST) is applied once per `(symbol, sell_date)` on CNC sell fills; MIS-to-CNC conversion charges delivery fees on the converted lot.

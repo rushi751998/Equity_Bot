@@ -16,6 +16,17 @@ from tfalgo.logging_utils import setup_logging
 app = typer.Typer(help="tfalgo trend-following backtester")
 data_app = typer.Typer(help="Data ingestion and checks")
 app.add_typer(data_app, name="data")
+# before:
+app = typer.Typer(help="tfalgo trend-following backtester")
+data_app = typer.Typer(help="Data ingestion and checks")
+app.add_typer(data_app, name="data")
+
+# after:
+app = typer.Typer(help="tfalgo trend-following backtester")
+data_app = typer.Typer(help="Data ingestion and checks")
+backtest_app = typer.Typer(help="Backtest execution")
+app.add_typer(data_app, name="data")
+app.add_typer(backtest_app, name="backtest")
 ConfigOpt = typer.Option("config/default.yaml", "--config", "-c", help="YAML config")
 
 
@@ -77,6 +88,18 @@ def outside(symbol: str = typer.Option(..., help="symbol to inspect"), config: P
     with pl.Config(tbl_rows=100):
         typer.echo(str(g))
 
+@backtest_app.command("run")
+def backtest_run(config: Path = ConfigOpt) -> None:
+    """Run deterministic backtest from SQLite store and write trades/equity/summary."""
+    from tfalgo.backtest.engine import BacktestEngine
+
+    setup_logging()
+    cfg = load_config(config)
+    cal = build_calendar(cfg)
+    store = build_store(cfg)
+    res = BacktestEngine(cfg, store, cal).run()
+    typer.echo(res.summary_text)
+    typer.echo(f"Outputs written to: {res.output_dir}")
 
 if __name__ == "__main__":
     logging.basicConfig()

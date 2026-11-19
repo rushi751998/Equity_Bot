@@ -486,6 +486,20 @@ class StrategyCompositionConfig(_Base):
     stop: str = "swing_low_with_fallback"
     exits: list[str] = ["ladder", "runner", "hold_score", "time_stop", "soft_exit"]
 
+class SlippageConfig(_Base):
+    min_bps: float = 5.0
+    impact_k_bps: float = 30.0
+    stop_multiplier: float = 1.5
+    max_participation: float = 0.10
+    max_fill_bars: int = Field(3, ge=1)
+
+
+class CostsConfig(_Base):
+    broker_profile: str = "zerodha"
+    broker_file: Path = Path("config/brokers/zerodha.yaml")
+    flat_cost_pct: float | None = None
+    slippage: SlippageConfig = SlippageConfig()
+
 class AppConfig(_Base):
     run: RunConfig
     session: SessionConfig = SessionConfig()
@@ -517,6 +531,7 @@ class AppConfig(_Base):
     buffers: BuffersConfig = BuffersConfig()
     portfolio: PortfolioConfig = PortfolioConfig()
     strategy: StrategyCompositionConfig = StrategyCompositionConfig()
+    costs: CostsConfig = CostsConfig()
 
     def snapshot_hash(self) -> str:
         """Stable hash of the full config (for run reproducibility)."""

@@ -184,3 +184,9 @@ portfolio:
 strategy:
   name: trend_pullback_v1
   patterns: [vcp, flat_base]
+
+costs:
+  broker_profile: zerodha
+  broker_file: config/brokers/zerodha.yaml
+  flat_cost_pct: null
+  slippage: {min_bps: 5, impact_k_bps: 30, stop_multiplier: 1.5, max_participation: 0.10, max_fill_bars: 3}
