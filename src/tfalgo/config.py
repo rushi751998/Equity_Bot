@@ -265,6 +265,57 @@ class ScoreConfig(_Base):
         """score = 100*earned/(100+enabled_optional_max); raw points unchanged otherwise."""
         return 100.0 * earned / (100.0 + self.optional.enabled_max())
 
+class RegimeConfig(_Base):
+    enabled: bool = True
+    multipliers: dict[Literal["HIGH", "MEDIUM", "LOW"], float] = {
+        "HIGH": 1.0,
+        "MEDIUM": 0.5,
+        "LOW": 0.0,
+    }
+    low_regime_stop: str = "hourly_ema20"
+    index_dma: list[int] = [50, 200]
+    breadth_dma: int = Field(50, ge=1)
+    breadth_min_pct: float = Field(50.0, ge=0, le=100)
+    high_low_lookback_days: int = Field(252, ge=2)
+    dist_day_lookback: int = Field(10, ge=1)
+    dist_day_min_count: int = Field(3, ge=1)
+    dist_day_drop_pct: float = Field(0.2, ge=0)
+    vix_avg_days: int = Field(20, ge=1)
+    high_frac: float = Field(0.8, gt=0, le=1)
+    medium_frac: float = Field(0.4, ge=0, le=1)
+
+
+class ChopBreakoutSuccessConfig(_Base):
+    enabled: bool = True
+    lookback_days: int = Field(20, ge=1)
+    horizon_days: int = Field(5, ge=1)
+    success_r: float = 1.0
+    min_events: int = Field(8, ge=1)
+    low_rate: float = Field(0.30, ge=0, le=1)
+    high_rate: float = Field(0.45, ge=0, le=1)
+
+
+class ChopEfficiencyConfig(_Base):
+    enabled: bool = True
+    period: int = Field(10, ge=1)
+    stock_min: float = Field(0.30, ge=0, le=1)
+    index_min: float = Field(0.25, ge=0, le=1)
+
+
+class ChopTimeStopConfig(_Base):
+    enabled: bool = True
+    max_days_to_reach_r: int = Field(3, ge=1)
+    progress_r: float = 1.0
+    stall_days: int = Field(5, ge=1)
+    stall_exit_below_r: float = 3.0
+
+
+class ChopConfig(_Base):
+    breakout_success: ChopBreakoutSuccessConfig = ChopBreakoutSuccessConfig()
+    efficiency: ChopEfficiencyConfig = ChopEfficiencyConfig()
+    time_stop: ChopTimeStopConfig = ChopTimeStopConfig()
+
+
 class AppConfig(_Base):
     run: RunConfig
     session: SessionConfig = SessionConfig()
@@ -280,6 +331,8 @@ class AppConfig(_Base):
     trend: TrendConfig = TrendConfig()
     setup: SetupConfig = SetupConfig()
     score: ScoreConfig = ScoreConfig()
+    regime: RegimeConfig = RegimeConfig()
+    chop: ChopConfig = ChopConfig()
 
     def snapshot_hash(self) -> str:
         """Stable hash of the full config (for run reproducibility)."""
