@@ -91,3 +91,16 @@ def test_muhurat_evening_session_is_soft_and_ignored_by_resample(bars5):
     q = QualityChecker(QualityConfig(), TradingCalendar())
     assert hard_failed_symbols(q.run({"S": big})) == {}
     assert resample(big, "1D").height == 60  # no bogus extra daily bar
+
+
+def test_stray_bar_on_normal_day_is_hard_and_located(bars5):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    stray = pl.DataFrame({"ts": [datetime(2024, 1, 2, 16, 5, tzinfo=ZoneInfo("Asia/Kolkata"))],
+                          "open": [100.0], "high": [101.0], "low": [99.0], "close": [100.0], "volume": [10.0]}
+                         ).with_columns(pl.col("ts").dt.convert_time_zone("Asia/Kolkata"))
+    out = _checks(bars5.vstack(stray).sort("ts"))
+    assert out["outside_session"].severity == "hard"
+    assert out["outside_session"].first_ts.startswith("2024-01-02T15:30")
+    assert "2024-01-02 15:30" in out["outside_session"].detail

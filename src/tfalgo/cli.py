@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-
+import polars as pl
 import typer
 
 from tfalgo.config import load_config
@@ -53,6 +53,29 @@ def check(config: Path = ConfigOpt) -> None:
     path = write_report(issues, syms, cfg.storage.output_dir / "data")
     failed = hard_failed_symbols(issues)
     typer.echo(f"Checked {len(syms)} symbols; excluded: {sorted(failed) or 'none'}. Report: {path}")
+
+
+@data_app.command("outside")
+def outside(symbol: str = typer.Option(..., help="symbol to inspect"), config: Path = ConfigOpt) -> None:
+    """List bars outside the regular session, grouped by day (diagnoses quality failures)."""
+    cfg = load_config(config)
+    cal = build_calendar(cfg)
+    store = build_store(cfg)
+    df = store.read_bars(symbol, cfg.data.csv.native_timeframe)
+    o, c = cal.session_open, cal.session_close
+    mins = pl.col("ts").dt.hour().cast(pl.Int64) * 60 + pl.col("ts").dt.minute().cast(pl.Int64)
+    out_mask = (mins < o.hour * 60 + o.minute) | (mins >= c.hour * 60 + c.minute)
+    reg_days = set(df.filter(~out_mask)["ts"].dt.date().to_list())
+    out = df.filter(out_mask).with_columns(day=pl.col("ts").dt.date())
+    if out.is_empty():
+        typer.echo("No out-of-session bars.")
+        return
+    g = out.group_by("day").agg(
+        pl.len().alias("bars"), pl.col("ts").min().dt.strftime("%H:%M").alias("first"),
+        pl.col("ts").max().dt.strftime("%H:%M").alias("last"),
+    ).sort("day").with_columns(has_regular_bars=pl.col("day").is_in(list(reg_days)))
+    with pl.Config(tbl_rows=100):
+        typer.echo(str(g))
 
 
 if __name__ == "__main__":
