@@ -1,0 +1,36 @@
+# Multi-Timeframe EMA Breakout + Pyramid Trend-Following Config
+# Place in config/ema_breakout.yaml to run and test variations from Flask.
+extends: default.yaml
+
+strategy:
+  name: ema_breakout_v1
+  params:
+    # Setup HTF ("1h" or "1d")
+    timeframe: "1h"
+    ema_periods: [9, 21, 50]
+    consolidation_min_days: 5
+    consolidation_max_range_pct: 8.0
+    breakout_vol_mult: 1.5
+    vol_avg_bars: 20
+    max_wait_bars_5m: 36
+
+    # 5m Entry & Holding Mode
+    double_bottom: true
+    flag_wedge: true
+    impulse_2x: true
+    impulse_pct_mult: 2.0
+    sl_source: "1h_low"        # "1h_low" | "1d_low" | "5m_low"
+    holding_mode: "swing"      # "swing" (multi-day) | "mis"
+
+    # Risk & Pyramiding
+    risk_per_trade_pct: 1.0
+    tranches: [0.33, 0.33, 0.34]
+    add_at_r: [1.0, 2.0]
+    use_risk_neutral_sl: true
+
+    # Exits & Hourly Trailing
+    trail_timeframe: "1h"
+    trail_ema_initial: 21
+    trail_ema_runner: 9
+    runner_atr_period: 14
+    runner_atr_mult: 0.5

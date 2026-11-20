@@ -516,6 +516,10 @@ class AppConfig(_Base):
     trend: TrendConfig = TrendConfig()
     setup: SetupConfig = SetupConfig()
     score: ScoreConfig = ScoreConfig()
+    setup_htf: dict = {}
+    entry_5m: dict = {}
+    risk_and_pyramid: dict = {}
+    exits_and_trail: dict = {}
     regime: RegimeConfig = RegimeConfig()
     chop: ChopConfig = ChopConfig()
     trigger: TriggerConfig = TriggerConfig()

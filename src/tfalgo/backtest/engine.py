@@ -190,6 +190,10 @@ def run_backtest_from_frames(
     out_dir = output_dir or (cfg.storage.output_dir / run_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if cfg.strategy.name == "ema_breakout_v1":
+        from tfalgo.strategy.ema_breakout_strategy import run_ema_breakout_backtest
+        return run_ema_breakout_backtest(cfg, frames_5m, bench_5m, cal, output_dir)
+
     data = prepared or prepare_market_data(cfg, frames_5m, bench_5m, cal)
     strategy = STRATEGIES.get(cfg.strategy.name)()
     stop_rule = STOP_RULES.get(cfg.strategy.stop)()
