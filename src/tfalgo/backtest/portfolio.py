@@ -45,6 +45,7 @@ class TradeRecord:
     bound_constraint: str
     hold_days: int
     gap_loss_flag: bool
+    stop_trail: str = ""
 
 
 @dataclass
@@ -78,6 +79,7 @@ class ActiveTradeMeta:
     hold_score_min: int = 100
     time_stop_flag: bool = False
     gap_loss_flag: bool = False
+    stop_trail: list[tuple[str, float]] = field(default_factory=list)
 
 
 class PortfolioLedger:
@@ -164,4 +166,5 @@ class PortfolioLedger:
             bound_constraint=meta.bound_constraint,
             hold_days=hold_days,
             gap_loss_flag=meta.gap_loss_flag,
+            stop_trail=";".join(f"{t}@{p:.2f}" for t, p in meta.stop_trail),
         ))

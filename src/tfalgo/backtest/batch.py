@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import math
 from bisect import bisect_left
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ import polars as pl
 
 from tfalgo.backtest.engine import PreparedMarketData, prepare_market_data, run_backtest_from_frames
 from tfalgo.backtest.metrics import compute_trade_metrics
+from tfalgo.indicators.ema import ema
 from tfalgo.backtest.simulator import build_portfolio_simulator_html
 from tfalgo.calendar import TradingCalendar
 from tfalgo.config import AppConfig
@@ -105,6 +108,23 @@ def run_batch_from_frames(
     eq_curves: list[np.ndarray] = []
     common_dates: list[str] = []
     sim_payload: list[dict[str, Any]] = []
+    daily_emas_by_sym: dict[str, dict[str, dict[str, float | None]]] = {}
+    for sym, d1 in data.daily_map.items():
+        if d1.is_empty():
+            continue
+        c_arr = d1["close"].to_numpy()
+        e9 = ema(c_arr, 9)
+        e21 = ema(c_arr, 21)
+        e50 = ema(c_arr, 50)
+        av_dates = d1["avail_date"].to_list()
+        m: dict[str, dict[str, float | None]] = {}
+        for idx_e, av_d in enumerate(av_dates):
+            m[av_d.isoformat()] = {
+                "ema9": None if math.isnan(e9[idx_e]) else float(e9[idx_e]),
+                "ema21": None if math.isnan(e21[idx_e]) else float(e21[idx_e]),
+                "ema50": None if math.isnan(e50[idx_e]) else float(e50[idx_e]),
+            }
+        daily_emas_by_sym[sym] = m
 
     for label, cfg in configs:
         res = run_backtest_from_frames(
@@ -173,9 +193,14 @@ def run_batch_from_frames(
                     )
                     candles = [
                         {"t": cr["ts"].isoformat(), "o": float(cr["open"]), "h": float(cr["high"]),
-                         "l": float(cr["low"]), "c": float(cr["close"])}
+                         "l": float(cr["low"]), "c": float(cr["close"]), "v": float(cr["volume"])}
                         for cr in win_df.iter_rows(named=True)
                     ]
+                day_emas = {}
+                sym_ema_map = daily_emas_by_sym.get(sym_t, {})
+                for cr_d in {c["t"][:10] for c in candles}:
+                    if cr_d in sym_ema_map:
+                        day_emas[cr_d] = sym_ema_map[cr_d]
                 t_list.append({
                     "trade_id": int(r["trade_id"]),
                     "symbol": sym_t,
@@ -189,6 +214,10 @@ def run_batch_from_frames(
                     "money_r": float(r["money_r"]),
                     "regime_at_entry": str(r["regime_at_entry"]),
                     "exit_reason": str(r["exit_reason"]),
+                    "pattern": str(r.get("pattern") or "none"),
+                    "pattern_quality": float(r.get("pattern_quality") or 0.0),
+                    "stop_trail": str(r.get("stop_trail") or ""),
+                    "day_emas": day_emas,
                     "candles": candles,
                 })
         sim_payload.append({
@@ -259,8 +288,30 @@ def run_batch_from_frames(
                 last_c = b_map[d_str]
             bench_closes.append(last_c)
     bench_payload = {"dates": common_dates, "closes": bench_closes}
+    hist_dir = output_dir / "history"
+    hist_dir.mkdir(parents=True, exist_ok=True)
+    run_tag = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + "_".join(lbl for lbl, _ in configs)[:40]
+    run_record = {
+        "run_id": run_tag,
+        "initial_capital": float(base_cfg.capital.initial),
+        "strategies": sim_payload,
+        "bench": bench_payload,
+    }
+    (hist_dir / f"{run_tag}.json").write_text(json.dumps(run_record), encoding="utf-8")
+
+    all_runs: list[dict[str, Any]] = []
+    for p in sorted(hist_dir.glob("*.json"), reverse=True)[:15]:
+        try:
+            all_runs.append(json.loads(p.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+
     sim_path = build_portfolio_simulator_html(
-        sim_payload, base_cfg.capital.initial, output_dir / "portfolio_simulator.html", bench_payload=bench_payload
+        sim_payload,
+        base_cfg.capital.initial,
+        output_dir / "portfolio_simulator.html",
+        bench_payload=bench_payload,
+        runs_history=all_runs,
     )
     return BatchResult(output_dir, comp_df, report_path, sim_path)
 

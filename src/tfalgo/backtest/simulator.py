@@ -12,10 +12,16 @@ def build_portfolio_simulator_html(
     initial_capital: float,
     output_path: Path,
     bench_payload: dict[str, Any] | None = None,
+    runs_history: list[dict[str, Any]] | None = None,
 ) -> Path:
-    """Write interactive portfolio simulator HTML with filters, day-wise P&L, Nifty 50 overlay, and 5m candlesticks."""
-    data_json = json.dumps(strategies_payload)
-    bench_json = json.dumps(bench_payload or {"dates": [], "closes": []})
+    """Write interactive portfolio simulator HTML with run switcher, filters, day-wise P&L, Nifty 50 overlay, and 5m candlesticks."""
+    runs = runs_history or [{
+        "run_id": "current",
+        "initial_capital": initial_capital,
+        "strategies": strategies_payload,
+        "bench": bench_payload or {"dates": [], "closes": []},
+    }]
+    runs_json = json.dumps(runs)
 
     html = f"""<!doctype html>
 <html lang="en">
@@ -73,6 +79,10 @@ def build_portfolio_simulator_html(
     <div>
       <h2>tfalgo Portfolio Simulator & Trade Inspector</h2>
       <div style="font-size:12.5px;color:#64748b;margin-top:2px;">Toggle strategies, allocate capital, filter trades Excel-style, and click any Trade ID for its 5m candlestick chart.</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <label style="font-size:12.5px;font-weight:600;color:#334155;">Test Run:</label>
+      <select id="runSelect" onchange="switchRun(this.value)" style="min-width:240px;"></select>
     </div>
   </header>
 
@@ -184,17 +194,39 @@ def build_portfolio_simulator_html(
       </div>
       <button class="ghost" onclick="closeModal()">Close (Esc)</button>
     </div>
-    <svg id="candleSvg" viewBox="0 0 1060 440" width="100%"></svg>
+    <div style="display:flex;gap:16px;align-items:center;font-size:12px;color:#475569;margin-bottom:8px;flex-wrap:wrap;">
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="togEmas" checked onchange="redrawActiveTrade()"> <span style="color:#8b5cf6;font-weight:700;">9D EMA</span> / <span style="color:#f59e0b;font-weight:700;">21D EMA</span> / <span style="color:#0d9488;font-weight:700;">50D EMA</span></label>
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="togVol" checked onchange="redrawActiveTrade()"> Volume</label>
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="togPat" checked onchange="redrawActiveTrade()"> Auto Pattern Overlay</label>
+    </div>
+    <svg id="candleSvg" viewBox="0 0 1060 510" width="100%"></svg>
   </div>
 </div>
 
 <script>
-const STRATEGIES = {data_json};
-const BENCH = {bench_json};
-const state = STRATEGIES.map(() => ({{
-  active: true,
-  weight: STRATEGIES.length ? Math.round((100 / STRATEGIES.length) * 10) / 10 : 0
-}}));
+const RUNS = {runs_json};
+let STRATEGIES = RUNS[0].strategies;
+let BENCH = RUNS[0].bench || {{ dates: [], closes: [] }};
+let state = [];
+
+function initRunDropdown() {{
+  const sel = document.getElementById("runSelect");
+  sel.innerHTML = RUNS.map((r, idx) => `<option value="${{idx}}">${{r.run_id}}${{idx === 0 ? " (latest)" : ""}}</option>`).join("");
+}}
+
+function switchRun(idxStr) {{
+  const run = RUNS[parseInt(idxStr, 10) || 0];
+  STRATEGIES = run.strategies || [];
+  BENCH = run.bench || {{ dates: [], closes: [] }};
+  document.getElementById("capInput").value = Math.round(run.initial_capital || 1000000);
+  state = STRATEGIES.map(() => ({{
+    active: true,
+    weight: STRATEGIES.length ? Math.round((100 / STRATEGIES.length) * 10) / 10 : 0
+  }}));
+  clearFilters();
+  renderControls();
+  recalc();
+}}
 
 let activeTrades = [];
 let sortCol = "entry_ts";
@@ -392,7 +424,11 @@ function applyTradeFilters() {{
   </tr>`).join("");
 }}
 
+let currentTradeUid = null;
+function redrawActiveTrade() {{ if (currentTradeUid) openTradeChart(currentTradeUid); }}
+
 function openTradeChart(uid) {{
+  currentTradeUid = uid;
   const t = activeTrades.find(x => x.uid === uid);
   if (!t) return;
   document.getElementById("modalTitle").textContent = `${{t.symbol}} — Trade #${{t.trade_id}} (${{t.strategy}})`;
@@ -400,17 +436,31 @@ function openTradeChart(uid) {{
     `<span class="pill">${{t.exit_reason}}</span> &nbsp; Entry: <b>${{t.avg_entry.toFixed(2)}}</b> (${{t.entry_ts.slice(0,16).replace("T"," ")}}) | ` +
     `Exit: <b>${{t.avg_exit.toFixed(2)}}</b> (${{t.exit_ts.slice(0,16).replace("T"," ")}}) | ` +
     `Stop: <b style="color:#dc2626">${{t.initial_stop.toFixed(2)}}</b> | ` +
-    `P&L: <b class="${{t.scaled_pnl>=0?'pos':'neg'}}">INR ${{Math.round(t.scaled_pnl).toLocaleString()}} (${{t.money_r.toFixed(2)}}R)</b>`;
+    `P&L: <b class="${{t.scaled_pnl>=0?'pos':'neg'}}">INR ${{Math.round(t.scaled_pnl).toLocaleString()}} (${{t.money_r.toFixed(2)}}R)</b>` +
+    ` &nbsp;<span style="color:#64748b;font-size:11.5px;">(Click 2 points on chart to measure)</span>`;
 
   const svg = document.getElementById("candleSvg");
   const bars = t.candles || [];
   if (!bars.length) {{
     svg.innerHTML = `<text x="530" y="220" text-anchor="middle" fill="#64748b">No 5m candlestick data embedded for this trade.</text>`;
   }} else {{
-    const W = 1060, H = 440, P = 64, R = 30, T = 26, B = 38;
-    let pmin = Math.min(...bars.map(b => b.l), t.initial_stop);
-    let pmax = Math.max(...bars.map(b => b.h), t.initial_stop);
-    const pad = (pmax - pmin) * 0.08 || 1;
+    const showEmas = document.getElementById("togEmas").checked;
+    const showVol = document.getElementById("togVol").checked;
+    const showPat = document.getElementById("togPat").checked;
+    const W = 1060, H = 510, P = 64, R = 30, T = 30, B = showVol ? 112 : 48;
+    const V_TOP = H - 96, V_BOT = H - 42;
+
+    const emaVals = [];
+    if (showEmas && t.day_emas) {{
+      Object.values(t.day_emas).forEach(e => {{
+        if (e.ema9) emaVals.push(e.ema9);
+        if (e.ema21) emaVals.push(e.ema21);
+        if (e.ema50) emaVals.push(e.ema50);
+      }});
+    }}
+    let pmin = Math.min(...bars.map(b => b.l), t.initial_stop, ...emaVals);
+    let pmax = Math.max(...bars.map(b => b.h), t.initial_stop, ...emaVals);
+    const pad = (pmax - pmin) * 0.10 || 1;
     pmin -= pad; pmax += pad;
     const cw = Math.max(2, Math.min(10, (W - P - R) / bars.length * 0.7));
     const mapX = i => P + (W - P - R) * ((i + 0.5) / bars.length);
@@ -420,41 +470,186 @@ function openTradeChart(uid) {{
     for (let g = 0; g <= 5; g++) {{
       const v = pmin + (pmax - pmin) * (g / 5);
       const y = mapY(v);
-      out += `<line x1="${{P}}" y1="${{y}}" x2="${{W-R}}" y2="${{y}}" stroke="#e2e8f0" stroke-dasharray="3,3"/>`;
+      out += `<line x1="${{P}}" y1="${{y}}" x2="${{W-R}}" y2="${{y}}" stroke="#f1f5f9"/>`;
       out += `<text x="${{P-8}}" y="${{y+4}}" font-size="11" text-anchor="end" fill="#64748b">${{v.toFixed(2)}}</text>`;
     }}
 
+    // Day-start, day-end, and subtle hourly vertical dotted lines
+    let prevDay = "";
+    bars.forEach((b, i) => {{
+      const day = b.t.slice(0, 10), hhmm = b.t.slice(11, 16), x = mapX(i);
+      const isDayStart = day !== prevDay;
+      const isDayEnd = (i === bars.length - 1) || (bars[i + 1].t.slice(0, 10) !== day);
+      if (isDayStart) {{
+        out += `<line x1="${{x}}" y1="${{T}}" x2="${{x}}" y2="${{H-B}}" stroke="#94a3b8" stroke-width="1.1" stroke-dasharray="4,3"/>`;
+        out += `<text x="${{x+3}}" y="${{H-B+14}}" font-size="10.5" font-weight="700" fill="#334155">${{day}} 09:15</text>`;
+      }} else if (isDayEnd) {{
+        out += `<line x1="${{x}}" y1="${{T}}" x2="${{x}}" y2="${{H-B}}" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="4,3"/>`;
+      }} else if (["10:15","11:15","12:15","13:15","14:15"].includes(hhmm)) {{
+        out += `<line x1="${{x}}" y1="${{T}}" x2="${{x}}" y2="${{H-B}}" stroke="#e2e8f0" stroke-width="0.9" stroke-dasharray="2,3"/>`;
+        out += `<text x="${{x}}" y="${{H-B+28}}" font-size="9.5" text-anchor="middle" fill="#94a3b8">${{hhmm}}</text>`;
+      }}
+      prevDay = day;
+    }});
+
     // Initial stop dashed line
     const yStop = mapY(t.initial_stop);
-    out += `<line x1="${{P}}" y1="${{yStop}}" x2="${{W-R}}" y2="${{yStop}}" stroke="#dc2626" stroke-width="1.6" stroke-dasharray="6,4"/>`;
+    out += `<line x1="${{P}}" y1="${{yStop}}" x2="${{W-R}}" y2="${{yStop}}" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="6,4"/>`;
     out += `<text x="${{W-R-4}}" y="${{yStop-5}}" font-size="11" font-weight="700" text-anchor="end" fill="#dc2626">INITIAL STOP ${{t.initial_stop.toFixed(2)}}</text>`;
+
+    // Trailing stop step-line
+    if (t.stop_trail) {{
+      const pts = t.stop_trail.split(";").filter(Boolean).map(s => {{
+        const [ts, pr] = s.split("@");
+        const idx = bars.findIndex(b => b.t.slice(0, 16) >= ts.slice(0, 16));
+        return {{ idx: idx >= 0 ? idx : 0, price: parseFloat(pr), ts }};
+      }});
+      if (pts.length > 0) {{
+        let stepPts = [];
+        for (let k = 0; k < pts.length; k++) {{
+          const x0 = mapX(pts[k].idx), y0 = mapY(pts[k].price);
+          stepPts.push(`${{x0.toFixed(1)}},${{y0.toFixed(1)}}`);
+          const nextIdx = (k + 1 < pts.length) ? pts[k + 1].idx : bars.length - 1;
+          stepPts.push(`${{mapX(nextIdx).toFixed(1)}},${{y0.toFixed(1)}}`);
+          out += `<circle cx="${{x0}}" cy="${{y0}}" r="3.5" fill="#dc2626"><title>Stop -> ${{pts[k].price.toFixed(2)}} @ ${{pts[k].ts.slice(11,16)}}</title></circle>`;
+        }}
+        out += `<polyline fill="none" stroke="#dc2626" stroke-width="1.8" points="${{stepPts.join(" ")}}"/>`;
+      }}
+    }}
+
+    if (showPat && t.pattern && t.pattern !== "none") {{
+      const eDay = t.entry_ts.slice(0, 10);
+      if (t.pattern === "orb" || t.pattern === "orb_short") {{
+        const orBars = bars.map((b, i) => ({{ b, i }})).filter(x => x.b.t.slice(0,10) === eDay && x.b.t.slice(11,16) < "09:30");
+        const dayLast = bars.map((b, i) => ({{ b, i }})).filter(x => x.b.t.slice(0,10) === eDay).pop();
+        if (orBars.length && dayLast) {{
+          const orHi = Math.max(...orBars.map(x => x.b.h)), orLo = Math.min(...orBars.map(x => x.b.l));
+          const x0 = mapX(orBars[0].i) - cw/2, x1 = mapX(orBars[orBars.length-1].i) + cw/2, xEnd = mapX(dayLast.i);
+          const yHi = mapY(orHi), yLo = mapY(orLo);
+          out += `<rect x="${{x0}}" y="${{yHi}}" width="${{Math.max(4,x1-x0)}}" height="${{Math.max(2,yLo-yHi)}}" fill="rgba(37,99,235,0.12)" stroke="#2563eb" stroke-width="1" stroke-dasharray="3,2"/>`;
+          out += `<line x1="${{x1}}" y1="${{yHi}}" x2="${{xEnd}}" y2="${{yHi}}" stroke="#2563eb" stroke-width="1" stroke-dasharray="3,3" opacity="0.65"/>`;
+          out += `<line x1="${{x1}}" y1="${{yLo}}" x2="${{xEnd}}" y2="${{yLo}}" stroke="#2563eb" stroke-width="1" stroke-dasharray="3,3" opacity="0.65"/>`;
+          out += `<text x="${{x0+4}}" y="${{yHi-4}}" font-size="10" font-weight="700" fill="#1d4ed8">OR [${{orLo.toFixed(2)}} - ${{orHi.toFixed(2)}}]</text>`;
+        }}
+      }} else {{
+        out += `<rect x="${{P+6}}" y="${{T+6}}" width="165" height="20" rx="4" fill="rgba(139,92,246,0.12)" stroke="#8b5cf6"/>`;
+        out += `<text x="${{P+14}}" y="${{T+20}}" font-size="10.5" font-weight="700" fill="#6d28d9">Pattern: ${{t.pattern.toUpperCase()}} (${{(t.pattern_quality*100).toFixed(0)}}%)</text>`;
+      }}
+    }}
+
+    // 9D, 21D, 50D Daily EMA lines
+    if (showEmas && t.day_emas) {{
+      const emaSpecs = [["ema9", "#8b5cf6", "9D"], ["ema21", "#f59e0b", "21D"], ["ema50", "#0d9488", "50D"]];
+      emaSpecs.forEach(([key, col, lbl]) => {{
+        const pts = [];
+        let lastVal = null;
+        bars.forEach((b, i) => {{
+          const de = t.day_emas[b.t.slice(0, 10)];
+          if (de && de[key] != null) {{
+            pts.push(`${{mapX(i).toFixed(1)}},${{mapY(de[key]).toFixed(1)}}`);
+            lastVal = de[key];
+          }}
+        }});
+        if (pts.length > 1) {{
+          out += `<polyline fill="none" stroke="${{col}}" stroke-width="1.4" stroke-dasharray="4,2" opacity="0.85" points="${{pts.join(" ")}}"/>`;
+          out += `<text x="${{W-R-4}}" y="${{mapY(lastVal)-3}}" font-size="9.5" font-weight="700" text-anchor="end" fill="${{col}}">${{lbl}} ${{lastVal.toFixed(1)}}</text>`;
+        }}
+      }});
+    }}
+
+    // Volume Pane
+    if (showVol) {{
+      const vmax = Math.max(...bars.map(b => b.v || 0), 1);
+      out += `<line x1="${{P}}" y1="${{V_TOP}}" x2="${{W-R}}" y2="${{V_TOP}}" stroke="#e2e8f0"/>`;
+      out += `<text x="${{P-8}}" y="${{V_TOP+10}}" font-size="9.5" text-anchor="end" fill="#94a3b8">VOL</text>`;
+      bars.forEach((b, i) => {{
+        const vh = ((b.v || 0) / vmax) * (V_BOT - V_TOP - 4);
+        const col = b.c >= b.o ? "rgba(22,163,74,0.45)" : "rgba(220,38,38,0.45)";
+        out += `<rect x="${{mapX(i) - cw/2}}" y="${{V_BOT - vh}}" width="${{cw}}" height="${{vh}}" fill="${{col}}"/>`;
+      }});
+    }}
 
     // Candlesticks
     bars.forEach((b, i) => {{
       const x = mapX(i), col = b.c >= b.o ? "#16a34a" : "#dc2626";
       const yH = mapY(b.h), yL = mapY(b.l), yO = mapY(b.o), yC = mapY(b.c);
       const top = Math.min(yO, yC), bh = Math.max(1.5, Math.abs(yO - yC));
+      out += `<g><title>${{b.t.slice(0,16).replace("T"," ")}} | O:${{b.o}} H:${{b.h}} L:${{b.l}} C:${{b.c}}</title>`;
       out += `<line x1="${{x}}" y1="${{yH}}" x2="${{x}}" y2="${{yL}}" stroke="${{col}}" stroke-width="1.2"/>`;
-      out += `<rect x="${{x - cw/2}}" y="${{top}}" width="${{cw}}" height="${{bh}}" fill="${{col}}"/>`;
+      out += `<rect x="${{x - cw/2}}" y="${{top}}" width="${{cw}}" height="${{bh}}" fill="${{col}}"/></g>`;
     }});
 
-    // Find entry & exit bar indices
+    // Entry & Exit vertical dotted markers + time-stamped badges
     const eKey = t.entry_ts.slice(0, 16), xKey = t.exit_ts.slice(0, 16);
     const eIdx = bars.findIndex(b => b.t.slice(0, 16) >= eKey);
     const xIdx = bars.findIndex(b => b.t.slice(0, 16) >= xKey);
     if (eIdx >= 0) {{
-      const ex = mapX(eIdx), ey = mapY(t.avg_entry);
-      out += `<polygon points="${{ex}},${{ey+4}} ${{ex-7}},${{ey+18}} ${{ex+7}},${{ey+18}}" fill="#2563eb"/>`;
-      out += `<text x="${{ex}}" y="${{ey+32}}" font-size="11" font-weight="700" text-anchor="middle" fill="#2563eb">ENTRY ${{t.avg_entry.toFixed(2)}}</text>`;
+      const ex = mapX(eIdx), ey = mapY(t.avg_entry), eTime = t.entry_ts.slice(11, 16);
+      out += `<line x1="${{ex}}" y1="${{T}}" x2="${{ex}}" y2="${{H-B}}" stroke="#2563eb" stroke-width="1.2" stroke-dasharray="2,2"/>`;
+      out += `<polygon points="${{ex}},${{ey+3}} ${{ex-6}},${{ey+15}} ${{ex+6}},${{ey+15}}" fill="#2563eb"/>`;
+      out += `<rect x="${{ex-64}}" y="${{ey+17}}" width="128" height="18" rx="4" fill="#eff6ff" stroke="#2563eb" stroke-width="0.9"/>`;
+      out += `<text x="${{ex}}" y="${{ey+30}}" font-size="10.5" font-weight="700" text-anchor="middle" fill="#1d4ed8">ENTRY ${{t.avg_entry.toFixed(2)}} (${{eTime}})</text>`;
     }}
     if (xIdx >= 0) {{
-      const xx = mapX(xIdx), xy = mapY(t.avg_exit);
-      out += `<polygon points="${{xx}},${{xy-4}} ${{xx-7}},${{xy-18}} ${{xx+7}},${{xy-18}}" fill="#d97706"/>`;
-      out += `<text x="${{xx}}" y="${{xy-24}}" font-size="11" font-weight="700" text-anchor="middle" fill="#b45309">EXIT ${{t.avg_exit.toFixed(2)}}</text>`;
+      const xx = mapX(xIdx), xy = mapY(t.avg_exit), xTime = t.exit_ts.slice(11, 16);
+      out += `<line x1="${{xx}}" y1="${{T}}" x2="${{xx}}" y2="${{H-B}}" stroke="#d97706" stroke-width="1.2" stroke-dasharray="2,2"/>`;
+      out += `<polygon points="${{xx}},${{xy-3}} ${{xx-6}},${{xy-15}} ${{xx+6}},${{xy-15}}" fill="#d97706"/>`;
+      out += `<rect x="${{xx-60}}" y="${{xy-36}}" width="120" height="18" rx="4" fill="#fffbeb" stroke="#d97706" stroke-width="0.9"/>`;
+      out += `<text x="${{xx}}" y="${{xy-23}}" font-size="10.5" font-weight="700" text-anchor="middle" fill="#b45309">EXIT ${{t.avg_exit.toFixed(2)}} (${{xTime}})</text>`;
     }}
-    out += `<text x="${{P}}" y="${{H-10}}" font-size="11" fill="#64748b">${{bars[0].t.slice(0,16).replace("T"," ")}}</text>`;
-    out += `<text x="${{W-R}}" y="${{H-10}}" font-size="11" text-anchor="end" fill="#64748b">${{bars[bars.length-1].t.slice(0,16).replace("T"," ")}}</text>`;
     svg.innerHTML = out;
+
+    // TradingView-style crosshair + 2-click distance/time ruler
+    const overlay = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    svg.appendChild(overlay);
+    let anchorA = null, anchorB = null;
+    const toSvg = (evt) => {{
+      const rect = svg.getBoundingClientRect();
+      const sx = (evt.clientX - rect.left) * (W / rect.width);
+      const sy = (evt.clientY - rect.top) * (H / rect.height);
+      const idx = Math.max(0, Math.min(bars.length - 1, Math.round(((sx - P) / (W - P - R)) * bars.length - 0.5)));
+      const cy = Math.max(T, Math.min(H - B, sy));
+      const price = pmin + (1 - (cy - T) / (H - T - B)) * (pmax - pmin);
+      return {{ idx, x: mapX(idx), y: cy, price }};
+    }};
+    const fmtDur = (t1, t2) => {{
+      const m = Math.round(Math.abs(new Date(t2) - new Date(t1)) / 60000);
+      const d = Math.floor(m / 1440), hh = Math.floor((m % 1440) / 60), mm = m % 60;
+      return (d ? d + "d " : "") + (hh ? hh + "h " : "") + mm + "m";
+    }};
+    const drawOverlay = (cur) => {{
+      let h = "";
+      const p2 = anchorB || (anchorA ? cur : null);
+      if (anchorA && p2) {{
+        const x1 = Math.min(anchorA.x, p2.x), x2 = Math.max(anchorA.x, p2.x);
+        const y1 = Math.min(anchorA.y, p2.y), y2 = Math.max(anchorA.y, p2.y);
+        const dp = p2.price - anchorA.price, pct = anchorA.price ? (dp / anchorA.price * 100) : 0;
+        const nBars = Math.abs(p2.idx - anchorA.idx), dur = fmtDur(bars[anchorA.idx].t, bars[p2.idx].t);
+        const col = dp >= 0 ? "#16a34a" : "#dc2626";
+        h += `<rect x="${{x1}}" y="${{y1}}" width="${{Math.max(2,x2-x1)}}" height="${{Math.max(2,y2-y1)}}" fill="${{dp>=0?'rgba(22,163,74,0.12)':'rgba(220,38,38,0.12)'}}" stroke="${{col}}" stroke-dasharray="3,2"/>`;
+        h += `<line x1="${{anchorA.x}}" y1="${{anchorA.y}}" x2="${{p2.x}}" y2="${{p2.y}}" stroke="${{col}}" stroke-width="1.5"/>`;
+        const bx = Math.min(W - 220, Math.max(P, (x1 + x2) / 2 - 105)), by = Math.max(T + 4, y1 - 36);
+        h += `<rect x="${{bx}}" y="${{by}}" width="210" height="30" rx="5" fill="#0f172a" opacity="0.9"/>`;
+        h += `<text x="${{bx+105}}" y="${{by+13}}" font-size="10.5" font-weight="700" text-anchor="middle" fill="#fff">${{dp>=0?'+':''}}${{dp.toFixed(2)}} (${{pct>=0?'+':''}}${{pct.toFixed(2)}}%)</text>`;
+        h += `<text x="${{bx+105}}" y="${{by+25}}" font-size="10" text-anchor="middle" fill="#cbd5e1">${{nBars}} bars | ${{dur}}</text>`;
+      }}
+      if (cur) {{
+        const b = bars[cur.idx];
+        h += `<line x1="${{cur.x}}" y1="${{T}}" x2="${{cur.x}}" y2="${{H-B}}" stroke="#475569" stroke-width="0.9" stroke-dasharray="3,3"/>`;
+        h += `<line x1="${{P}}" y1="${{cur.y}}" x2="${{W-R}}" y2="${{cur.y}}" stroke="#475569" stroke-width="0.9" stroke-dasharray="3,3"/>`;
+        h += `<rect x="4" y="${{cur.y-9}}" width="56" height="18" rx="3" fill="#0f172a"/><text x="32" y="${{cur.y+4}}" font-size="10" text-anchor="middle" fill="#fff">${{cur.price.toFixed(2)}}</text>`;
+        h += `<rect x="${{Math.min(W-120, Math.max(P, cur.x-55))}}" y="${{H-B+2}}" width="110" height="16" rx="3" fill="#0f172a"/><text x="${{Math.min(W-65, Math.max(P+55, cur.x))}}" y="${{H-B+13}}" font-size="9.5" text-anchor="middle" fill="#fff">${{b.t.slice(5,16).replace("T"," ")}}</text>`;
+      }}
+      overlay.innerHTML = h;
+    }};
+    svg.onmousemove = (e) => drawOverlay(toSvg(e));
+    svg.onmouseleave = () => drawOverlay(null);
+    svg.onclick = (e) => {{
+      const pt = toSvg(e);
+      if (!anchorA || (anchorA && anchorB)) {{ anchorA = pt; anchorB = null; }}
+      else {{ anchorB = pt; }}
+      drawOverlay(pt);
+    }};
   }}
   document.getElementById("tradeModal").classList.add("open");
 }}
@@ -543,8 +738,8 @@ function recalc() {{
 }}
 
 document.getElementById("capInput").addEventListener("input", recalc);
-renderControls();
-recalc();
+initRunDropdown();
+switchRun("0");
 </script>
 </body>
 </html>

@@ -296,9 +296,13 @@ def run_backtest_from_frames(
                                 regime_at_entry=reg.label, entry_score=mc["entry_score"],
                                 score_zone=mc["score_zone"], pattern=mc["pattern"] or "none",
                                 pattern_quality=mc["pattern_quality"], bound_constraint=mc["bound_constraint"],
-                                qty_peak=fill.qty, total_buy_qty=fill.qty,
-                                total_buy_notional=fill.qty * fill.price,
+                                qty_peak=fill.qty,
+                                total_buy_qty=fill.qty if pos_side == "LONG" else 0,
+                                total_buy_notional=(fill.qty * fill.price) if pos_side == "LONG" else 0.0,
+                                total_sell_qty=fill.qty if pos_side == "SHORT" else 0,
+                                total_sell_notional=(fill.qty * fill.price) if pos_side == "SHORT" else 0.0,
                                 fees=fill.fees, slippage_cost=fill.slippage_cost,
+                                stop_trail=[(ts.isoformat(), stop_res["stop_price"])],
                             )
                             states[sym] = SymbolState(
                                 symbol=sym, lifecycle=LifecycleState.OPEN_MIS, position=pos,
@@ -330,8 +334,12 @@ def run_backtest_from_frames(
                 if fill is not None:
                     ledger.apply_fill(fill, next_td)
                     meta = active_meta.pop(sym)
-                    meta.total_sell_qty += fill.qty
-                    meta.total_sell_notional += fill.qty * fill.price
+                    if fill.side == "SELL":
+                        meta.total_sell_qty += fill.qty
+                        meta.total_sell_notional += fill.qty * fill.price
+                    else:
+                        meta.total_buy_qty += fill.qty
+                        meta.total_buy_notional += fill.qty * fill.price
                     meta.fees += fill.fees
                     meta.slippage_cost += fill.slippage_cost
                     if float(bar["open"]) < pos.current_stop:
@@ -352,13 +360,17 @@ def run_backtest_from_frames(
                 fill, _ = broker.execute_bar_fill(
                     sym, sq_side, pos.total_qty, "MIS", ts,
                     float(bar["open"]), float(bar["high"]), float(bar["low"]), float(bar["volume"]),
-                    reason="mis_squareoff",
+                    is_stop=True, stop_price=float(bar["open"]), reason="mis_squareoff",
                 )
                 if fill is not None:
                     ledger.apply_fill(fill, next_td)
                     meta = active_meta.pop(sym)
-                    meta.total_sell_qty += fill.qty
-                    meta.total_sell_notional += fill.qty * fill.price
+                    if fill.side == "SELL":
+                        meta.total_sell_qty += fill.qty
+                        meta.total_sell_notional += fill.qty * fill.price
+                    else:
+                        meta.total_buy_qty += fill.qty
+                        meta.total_buy_notional += fill.qty * fill.price
                     meta.fees += fill.fees
                     meta.slippage_cost += fill.slippage_cost
                     ledger.close_trade(meta, ts, "mis_squareoff", 1)
