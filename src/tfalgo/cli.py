@@ -119,6 +119,20 @@ def backtest_batch(
     typer.echo(f"Report HTML   : {res.report_html}")
     typer.echo(f"Simulator HTML: {res.simulator_html}")
 
+@app.command("ui")
+def launch_ui(
+    config: Path = ConfigOpt,
+    host: str = typer.Option("127.0.0.1", help="Bind host"),
+    port: int = typer.Option(5000, help="Port"),
+) -> None:
+    """Launch the local Flask workstation (backtest runner, simulator, MTF charts)."""
+    from tfalgo.web.app import create_app
+
+    setup_logging()
+    flask_app = create_app(config)
+    typer.echo(f"Open http://{host}:{port} in your browser")
+    flask_app.run(host=host, port=port, debug=False)
+
 if __name__ == "__main__":
     logging.basicConfig()
     app()
