@@ -1,0 +1,8 @@
+extends: pilot.yaml
+
+strategy:
+  name: orb_short_v1
+  params:
+    or_end: "09:30"
+    entry_until: "11:30"
+    skip_high_regime: false

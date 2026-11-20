@@ -168,4 +168,6 @@ def test_batch_runner_and_drawdown_report(tmp_path):
     assert res.report_html.exists()
     assert "<svg" in res.report_html.read_text(encoding="utf-8")
     assert res.simulator_html.exists()
-    assert "tfalgo Post-Backtest Portfolio Simulator" in res.simulator_html.read_text(encoding="utf-8")
+    sim_txt = res.simulator_html.read_text(encoding="utf-8")
+    assert "tfalgo Portfolio Simulator & Trade Inspector" in sim_txt
+    assert "Overlay Nifty 50" in sim_txt

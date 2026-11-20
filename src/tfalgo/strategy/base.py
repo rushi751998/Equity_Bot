@@ -82,6 +82,7 @@ class PositionState:
     highest_high: float = 0.0
     hourly_below_ema20_streak: int = 0
     entry_bar_count: int = 0
+    side: Literal["LONG", "SHORT"] = "LONG"
 
     @property
     def total_qty(self) -> int:

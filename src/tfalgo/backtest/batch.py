@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -155,10 +156,41 @@ def run_batch_from_frames(
 
         eq_arr = np.asarray(em["equities"], dtype=np.float64) if em["equities"] else np.array([cfg.capital.initial])
         d_rets = [0.0] + (np.diff(eq_arr) / np.where(eq_arr[:-1] > 0, eq_arr[:-1], 1.0)).tolist() if len(eq_arr) > 1 else [0.0]
-        t_list = (
-            [{"net_pnl": float(r["net_pnl"]), "money_r": float(r["money_r"])} for r in res.trades.iter_rows(named=True)]
-            if not res.trades.is_empty() else []
-        )
+        t_list = []
+        if not res.trades.is_empty():
+            for r in res.trades.iter_rows(named=True):
+                sym_t = r["symbol"]
+                e_ts, x_ts = r["entry_ts"], r["exit_ts"]
+                e_d = e_ts.date() if hasattr(e_ts, "date") else e_ts
+                x_d = x_ts.date() if hasattr(x_ts, "date") else x_ts
+                i0 = max(0, bisect_left(data.all_dates, e_d) - 1)
+                i1 = min(len(data.all_dates) - 1, bisect_left(data.all_dates, x_d) + 1)
+                d_lo, d_hi = data.all_dates[i0], data.all_dates[i1]
+                candles = []
+                if sym_t in data.m5_map:
+                    win_df = data.m5_map[sym_t].filter(
+                        (pl.col("ts").dt.date() >= d_lo) & (pl.col("ts").dt.date() <= d_hi)
+                    )
+                    candles = [
+                        {"t": cr["ts"].isoformat(), "o": float(cr["open"]), "h": float(cr["high"]),
+                         "l": float(cr["low"]), "c": float(cr["close"])}
+                        for cr in win_df.iter_rows(named=True)
+                    ]
+                t_list.append({
+                    "trade_id": int(r["trade_id"]),
+                    "symbol": sym_t,
+                    "entry_ts": e_ts.isoformat() if hasattr(e_ts, "isoformat") else str(e_ts),
+                    "exit_ts": x_ts.isoformat() if hasattr(x_ts, "isoformat") else str(x_ts),
+                    "avg_entry": float(r["avg_entry"]),
+                    "avg_exit": float(r["avg_exit"]),
+                    "initial_stop": float(r["initial_stop"]),
+                    "qty_peak": int(r["qty_peak"]),
+                    "net_pnl": float(r["net_pnl"]),
+                    "money_r": float(r["money_r"]),
+                    "regime_at_entry": str(r["regime_at_entry"]),
+                    "exit_reason": str(r["exit_reason"]),
+                    "candles": candles,
+                })
         sim_payload.append({
             "name": label,
             "base_capital": float(cfg.capital.initial),
@@ -218,7 +250,18 @@ def run_batch_from_frames(
     )
     report_path = output_dir / "batch_report.html"
     report_path.write_text(html, encoding="utf-8")
-    sim_path = build_portfolio_simulator_html(sim_payload, base_cfg.capital.initial, output_dir / "portfolio_simulator.html")
+    bench_closes: list[float] = []
+    if not data.bench_d1.is_empty() and common_dates:
+        b_map = {r["date"].isoformat(): float(r["close"]) for r in data.bench_d1.iter_rows(named=True)}
+        last_c = next(iter(b_map.values()), 0.0)
+        for d_str in common_dates:
+            if d_str in b_map:
+                last_c = b_map[d_str]
+            bench_closes.append(last_c)
+    bench_payload = {"dates": common_dates, "closes": bench_closes}
+    sim_path = build_portfolio_simulator_html(
+        sim_payload, base_cfg.capital.initial, output_dir / "portfolio_simulator.html", bench_payload=bench_payload
+    )
     return BatchResult(output_dir, comp_df, report_path, sim_path)
 
 

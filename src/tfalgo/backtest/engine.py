@@ -244,7 +244,7 @@ def run_backtest_from_frames(
         pat_cache: dict[str, tuple[str | None, float]] = {}
 
         day_start_eq = ledger.cash + sum(
-            states[s].position.total_qty * last_prices.get(s, states[s].position.avg_entry)
+            (-1 if states[s].position.side == "SHORT" else 1) * states[s].position.total_qty * last_prices.get(s, states[s].position.avg_entry)
             for s in states if states[s].position is not None
         )
         entries_today_port = 0
@@ -266,10 +266,15 @@ def run_backtest_from_frames(
                     ledger.apply_fill(fill, next_td)
                     if po.is_entry and st.position is None and po.meta_ctx is not None:
                         mc = po.meta_ctx
-                        stop_res = stop_rule.compute(
-                            fill.price, mc["swing_low"], mc["atr15"], mc["hourly_atr"], cfg
-                        )
-                        if stop_res["valid"]:
+                        pos_side = mc.get("side", "LONG")
+                        if pos_side == "SHORT":
+                            sp = float(mc["stop_price"])
+                            stop_res = {"valid": sp > fill.price, "stop_price": sp, "stop_source": mc.get("stop_source", "or_high")}
+                            rps = sp - fill.price
+                        else:
+                            stop_res = stop_rule.compute(fill.price, mc["swing_low"], mc["atr15"], mc["hourly_atr"], cfg)
+                            rps = fill.price - (stop_res["stop_price"] or fill.price)
+                        if stop_res["valid"] and rps > 0:
                             pos = PositionState(
                                 symbol=sym,
                                 tranches=(TrancheFill(fill.qty, fill.price, "MIS", ts),),
@@ -279,8 +284,9 @@ def run_backtest_from_frames(
                                 planned_full_qty=mc["planned_full_qty"],
                                 initial_risk_budget=mc["risk_budget"],
                                 entry_price_1=fill.price,
-                                risk_per_share=fill.price - stop_res["stop_price"],
+                                risk_per_share=rps,
                                 highest_high=float(bar["high"]),
+                                side=pos_side,
                             )
                             tid = ledger.next_trade_id()
                             active_meta[sym] = ActiveTradeMeta(
@@ -308,11 +314,16 @@ def run_backtest_from_frames(
 
             # 2. Evaluate stops on open position (STOP WINS if same bar as entry/add)
             st = states[sym]
-            if st.position is not None and float(bar["low"]) <= st.position.current_stop:
+            stop_hit = st.position is not None and (
+                float(bar["high"]) >= st.position.current_stop if st.position.side == "SHORT"
+                else float(bar["low"]) <= st.position.current_stop
+            )
+            if stop_hit:
                 pos = st.position
                 prod = "CNC" if pos.carried else "MIS"
+                exit_side = "BUY" if pos.side == "SHORT" else "SELL"
                 fill, _ = broker.execute_bar_fill(
-                    sym, "SELL", pos.total_qty, prod, ts,
+                    sym, exit_side, pos.total_qty, prod, ts,
                     float(bar["open"]), float(bar["high"]), float(bar["low"]), float(bar["volume"]),
                     is_stop=True, stop_price=pos.current_stop, reason="stop_hit",
                 )
@@ -337,8 +348,9 @@ def run_backtest_from_frames(
             # 3. 15:15 MIS square-off
             if t_str >= cfg.carry.mis_squareoff_time and st.position is not None and not st.position.carried:
                 pos = st.position
+                sq_side = "BUY" if pos.side == "SHORT" else "SELL"
                 fill, _ = broker.execute_bar_fill(
-                    sym, "SELL", pos.total_qty, "MIS", ts,
+                    sym, sq_side, pos.total_qty, "MIS", ts,
                     float(bar["open"]), float(bar["high"]), float(bar["low"]), float(bar["volume"]),
                     reason="mis_squareoff",
                 )
@@ -417,19 +429,19 @@ def run_backtest_from_frames(
                     new_st, intents = strategy.on_bar(st, ctx, snap_p, cfg)
                     states[sym] = new_st
                     for intent in intents:
-                        if intent.side == "BUY" and intent.qty > 0:
+                        if intent.side in ("BUY", "SELL") and intent.qty > 0:
                             rps = intent.meta.get("risk_per_share") or max(close_px * 0.03, 0.05)
                             p_ok, _ = portfolio_allows_entry(st, snap_p, p_row.get("sector"), 0.0, intent.qty * rps, cfg)
                             if p_ok:
                                 pending[sym] = PendingOrder(
-                                    symbol=sym, side="BUY", qty=intent.qty, product=intent.product,
+                                    symbol=sym, side=intent.side, qty=intent.qty, product=intent.product,
                                     reason=intent.reason, bars_left=cfg.costs.slippage.max_fill_bars,
                                     is_entry=True, meta_ctx=intent.meta or None,
                                 )
 
         # End-of-day equity snapshot
         mtm = ledger.cash + sum(
-            states[s].position.total_qty * last_prices.get(s, states[s].position.avg_entry)
+            (-1 if states[s].position.side == "SHORT" else 1) * states[s].position.total_qty * last_prices.get(s, states[s].position.avg_entry)
             for s in states if states[s].position is not None
         )
         equity_rows.append({"date": cur_date.isoformat(), "equity": round(mtm, 2), "cash": round(ledger.cash, 2)})

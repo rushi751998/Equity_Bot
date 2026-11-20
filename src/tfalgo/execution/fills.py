@@ -86,7 +86,10 @@ class NextOpenSlippageFillModel(FillModel):
         if is_stop:
             slip_bps *= cfg.stop_multiplier
 
-        base_px = min(bar_open, stop_price) if (is_stop and stop_price is not None) else bar_open
+        if is_stop and stop_price is not None:
+            base_px = min(bar_open, stop_price) if side == "SELL" else max(bar_open, stop_price)
+        else:
+            base_px = bar_open
         if side == "BUY":
             raw_px = base_px * (1.0 + slip_bps / 10_000.0)
             fill_px = round_up_tick(raw_px, tick_size)
