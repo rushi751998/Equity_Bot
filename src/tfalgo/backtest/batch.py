@@ -97,6 +97,8 @@ def run_batch_from_frames(
     cal: TradingCalendar,
     output_dir: Path,
     prepared: PreparedMarketData | None = None,
+    progress_cb=None,
+    session_name: str | None = None
 ) -> BatchResult:
     """Run multiple strategy configs sharing one PreparedMarketData and generate comparison + drawdown charts."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -130,6 +132,7 @@ def run_batch_from_frames(
         res = run_backtest_from_frames(
             cfg, frames_5m, bench_5m, cal,
             output_dir=output_dir / label, prepared=data,
+            progress_cb=progress_cb,
         )
         em = compute_equity_metrics(res.equity)
         # Reconstruct TradeRecord-compatible metrics from trades.csv
@@ -290,14 +293,33 @@ def run_batch_from_frames(
     bench_payload = {"dates": common_dates, "closes": bench_closes}
     hist_dir = output_dir / "history"
     hist_dir.mkdir(parents=True, exist_ok=True)
-    run_tag = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + "_".join(lbl for lbl, _ in configs)[:40]
-    run_record = {
-        "run_id": run_tag,
-        "initial_capital": float(base_cfg.capital.initial),
-        "strategies": sim_payload,
-        "bench": bench_payload,
-    }
-    (hist_dir / f"{run_tag}.json").write_text(json.dumps(run_record), encoding="utf-8")
+    run_tag = session_name or (datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + "_".join(lbl for lbl, _ in configs)[:40])
+    hist_file = hist_dir / f"{run_tag}.json"
+
+    if session_name and hist_file.exists():
+        run_record = json.loads(hist_file.read_text(encoding="utf-8"))
+        existing = {s["name"]: s for s in run_record.get("strategies", [])}
+        for new_s in sim_payload:
+            if new_s["name"] in existing:
+                old_s = existing[new_s["name"]]
+                seen = {(t["symbol"], t["entry_ts"], t["exit_ts"]) for t in old_s["trades"]}
+                for t in new_s["trades"]:
+                    k = (t["symbol"], t["entry_ts"], t["exit_ts"])
+                    if k not in seen:
+                        old_s["trades"].append(t)
+                        seen.add(k)
+            else:
+                existing[new_s["name"]] = new_s
+        run_record["strategies"] = list(existing.values())
+    else:
+        run_record = {
+            "run_id": run_tag,
+            "initial_capital": float(base_cfg.capital.initial),
+            "strategies": sim_payload,
+            "bench": bench_payload,
+        }
+
+    hist_file.write_text(json.dumps(run_record), encoding="utf-8")
 
     all_runs: list[dict[str, Any]] = []
     for p in sorted(hist_dir.glob("*.json"), reverse=True)[:15]:
@@ -307,7 +329,7 @@ def run_batch_from_frames(
             pass
 
     sim_path = build_portfolio_simulator_html(
-        sim_payload,
+        run_record["strategies"],
         base_cfg.capital.initial,
         output_dir / "portfolio_simulator.html",
         bench_payload=bench_payload,
@@ -316,14 +338,28 @@ def run_batch_from_frames(
     return BatchResult(output_dir, comp_df, report_path, sim_path)
 
 
-def run_batch(config_paths: list[Path], store: BarStore, cal: TradingCalendar, output_dir: Path) -> BatchResult:
+def run_batch(
+    config_paths: list[Path],
+    store: BarStore,
+    cal: TradingCalendar,
+    output_dir: Path,
+    symbols: list[str] | None = None,
+    cached_map: dict[str, list[str]] | None = None,
+    progress_cb=None,
+    session_name: str | None = None
+) -> BatchResult:
     configs = [(p.stem, load_config_cached(p)) for p in config_paths]
     base_cfg = configs[0][1]
     tf = base_cfg.run.base_timeframe
-    syms = base_cfg.data.symbols or [s for s in store.list_symbols(tf) if not s.startswith("idx:")]
+
+    # Use UI-selected tickers if provided; skip tickers already cached in this session
+    base_syms = symbols or base_cfg.data.symbols or [s for s in store.list_symbols(tf) if not s.startswith("idx:")]
+    cached_for_first = set((cached_map or {}).get(str(config_paths[0]).replace("\\", "/"), []))
+    syms = [s for s in base_syms if s not in cached_for_first] or base_syms
+
     frames = {s: store.read_bars(s, tf, base_cfg.run.start, base_cfg.run.end) for s in syms}
     bench = store.read_bars(f"idx:{base_cfg.benchmark.index}", tf, base_cfg.run.start, base_cfg.run.end)
-    return run_batch_from_frames(configs, frames, bench, cal, output_dir)
+    return run_batch_from_frames(configs, frames, bench, cal, output_dir, progress_cb=progress_cb, session_name=session_name)
 
 
 def load_config_cached(path: Path) -> AppConfig:

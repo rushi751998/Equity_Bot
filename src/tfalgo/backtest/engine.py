@@ -184,8 +184,12 @@ def run_backtest_from_frames(
     cal: TradingCalendar,
     output_dir: Path | None = None,
     prepared: PreparedMarketData | None = None,
+    progress_cb=None,
 ) -> BacktestResult:
     """Pure in-memory runner (used by both BacktestEngine and synthetic tests)."""
+    if cfg.strategy.name == "ema_breakout_v1":
+        from tfalgo.strategy.ema_breakout_strategy import run_ema_breakout_backtest
+        return run_ema_breakout_backtest(cfg, frames_5m, bench_5m, cal, output_dir, progress_cb=progress_cb)
     run_id = f"run_{cfg.snapshot_hash()}_{cfg.run.seed}"
     out_dir = output_dir or (cfg.storage.output_dir / run_id)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -212,6 +216,8 @@ def run_backtest_from_frames(
     for idx_d, cur_date in enumerate(data.all_dates):
         if idx_d % 50 == 0 or idx_d == len(data.all_dates) - 1:
             log.info("Progress: %d/%d days (%s) | trades=%d", idx_d + 1, len(data.all_dates), cur_date, len(ledger.trades))
+        if progress_cb and (idx_d % 20 == 0 or idx_d == len(data.all_dates) - 1):
+            progress_cb(idx_d + 1, len(data.all_dates), f"{cur_date} — {idx_d + 1} / {len(data.all_dates)} days | trades={len(ledger.trades)}")
         ledger.settle_t1(cur_date)
         next_td = data.all_dates[idx_d + 1] if idx_d + 1 < len(data.all_dates) else None
 

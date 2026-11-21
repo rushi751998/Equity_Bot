@@ -2,14 +2,14 @@
 
 Place in: src/tfalgo/strategy/ema_breakout_strategy.py
 Registers `ema_breakout_v1` in STRATEGIES and provides `run_ema_breakout_backtest(...)`
-returning a standard `BacktestResult` compatible with Flask / Simulator.
+with day-by-day + symbol progress callbacks for the Flask UI.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -200,6 +200,7 @@ def backtest_symbol(
     params: dict[str, Any],
     capital: float = 1_000_000.0,
     start_trade_id: int = 1,
+    day_progress_cb: Callable[[int, int], None] | None = None,
 ) -> list[dict[str, Any]]:
     p = {**DEFAULT_PARAMS, **params}
     htf = resample_ohlcv(df_5m, p["timeframe"])
@@ -216,6 +217,11 @@ def backtest_symbol(
     atr_mult = float(p["runner_atr_mult"])
     holding_mode = p["holding_mode"]
 
+    unique_days = df_5m.index.normalize().unique()
+    total_days = max(1, len(unique_days))
+    last_day = None
+    day_num = 0
+
     trades: list[dict[str, Any]] = []
     pos: _Pos | None = None
     pending_setup: dict[str, Any] | None = None
@@ -224,6 +230,12 @@ def backtest_symbol(
     for i in range(20, len(df_5m)):
         bar = df_5m.iloc[i]
         ts = df_5m.index[i]
+        cur_d = ts.date()
+        if cur_d != last_day:
+            last_day = cur_d
+            day_num += 1
+            if day_progress_cb and (day_num % 20 == 0 or day_num == total_days):
+                day_progress_cb(day_num, total_days)
 
         prev_htf = htf[htf.index < ts]
         if pos is None and len(prev_htf) > 0:
@@ -326,12 +338,13 @@ def _trade_dict(pos: _Pos, exit_ts: pd.Timestamp, exit_px: float, reason: str, r
     return {
         "trade_id": pos.trade_id,
         "symbol": pos.symbol,
-        "entry_ts": pos.entry_ts.isoformat(),
-        "exit_ts": exit_ts.isoformat(),
+        "entry_ts": pos.entry_ts.to_pydatetime(),
+        "exit_ts": exit_ts.to_pydatetime(),
         "avg_entry": round(_avg_entry(pos), 2),
         "avg_exit": round(exit_px, 2),
         "initial_stop": round(pos.initial_sl, 2),
         "tranches_filled": pos.tranches_filled,
+        "qty_peak": int(round(sum(pos.qty_by_tranche))),
         "net_pnl": round(pos.realized_pnl, 2),
         "money_r": round(pos.realized_pnl / risk_inr, 2) if risk_inr > 0 else 0.0,
         "exit_reason": reason,
@@ -346,6 +359,7 @@ def run_ema_breakout_backtest(
     bench_5m: pl.DataFrame,
     cal: TradingCalendar,
     output_dir: Path | None = None,
+    progress_cb: Callable[[int, int, str], None] | None = None,
 ) -> Any:
     """Drop-in BacktestResult runner called from engine.py when strategy == ema_breakout_v1."""
     from tfalgo.backtest.engine import BacktestResult
@@ -359,19 +373,25 @@ def run_ema_breakout_backtest(
     all_dates: set[str] = set()
     tid = 1
 
-    for sym, pl_df in sorted(frames_5m.items()):
-        if pl_df.is_empty():
-            continue
-        pd_df = pl_df.sort("ts").to_pandas().set_index("ts")
+    syms = [s for s, df in sorted(frames_5m.items()) if not df.is_empty()]
+    total_syms = max(1, len(syms))
+
+    for s_idx, sym in enumerate(syms, start=1):
+        pd_df = frames_5m[sym].sort("ts").to_pandas().set_index("ts")
         all_dates.update(pd_df.index.strftime("%Y-%m-%d").unique())
-        sym_trades = backtest_symbol(sym, pd_df, params, cfg.capital.initial, start_trade_id=tid)
+
+        def _on_day(d_done: int, d_tot: int, _sym: str = sym, _si: int = s_idx) -> None:
+            if progress_cb:
+                progress_cb(d_done, d_tot, f"{_sym} ({_si}/{total_syms}) — {d_done} / {d_tot} days")
+
+        sym_trades = backtest_symbol(sym, pd_df, params, cfg.capital.initial, start_trade_id=tid, day_progress_cb=_on_day)
         all_trades.extend(sym_trades)
         tid += len(sym_trades)
 
     sorted_dates = sorted(all_dates)
     pnl_by_date: dict[str, float] = {}
     for t in all_trades:
-        d = t["exit_ts"][:10]
+        d = t["exit_ts"].strftime("%Y-%m-%d")
         pnl_by_date[d] = pnl_by_date.get(d, 0.0) + float(t["net_pnl"])
 
     eq = float(cfg.capital.initial)
@@ -398,25 +418,3 @@ def run_ema_breakout_backtest(
     )
     (out_dir / "summary.txt").write_text(summary, encoding="utf-8")
     return BacktestResult(run_id, out_dir, trades_df, equity_df, summary)
-
-
-if __name__ == "__main__":
-    idx = pd.date_range("2024-01-01 09:15", "2024-02-02 15:25", freq="5min", tz="Asia/Kolkata")
-    idx = idx[(idx.strftime("%H:%M") >= "09:15") & (idx.strftime("%H:%M") <= "15:25") & (idx.dayofweek < 5)]
-    n = len(idx)
-    rng = np.random.default_rng(7)
-    close = np.full(n, 100.0)
-    vol = np.full(n, 1000.0)
-    split = int(n * 0.6)
-    close[:split] = 100.0 + rng.normal(0, 0.25, split)
-    close[split:split + 12] = np.linspace(100.2, 103.5, 12)
-    vol[split:split + 12] = 3500.0
-    close[split + 12:split + 16] = [103.1, 102.9, 102.8, 104.2]
-    close[split + 16:] = np.linspace(104.3, 120.0, n - (split + 16))
-    df = pd.DataFrame(
-        {"open": np.roll(close, 1), "high": close + 0.3, "low": close - 0.3, "close": close, "volume": vol},
-        index=idx,
-    )
-    df.iloc[0, 0] = 100.0
-    res = backtest_symbol("TESTSYM", df, DEFAULT_PARAMS)
-    print(f"Self-test trades: {len(res)} | {res[0] if res else 'none'}")

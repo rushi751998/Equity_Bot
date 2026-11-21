@@ -20,7 +20,21 @@ from tfalgo.indicators.ema import ema
 from tfalgo.indicators.patterns.vcp import _extract_contractions
 from tfalgo.indicators.atr import wilder_atr
 
-_RUN_STATUS: dict[str, Any] = {"running": False, "message": "Idle", "last_error": None}
+_RUN_STATUS: dict[str, Any] = {
+    "running": False,
+    "message": "Idle",
+    "days_done": 0,
+    "total_days": 0,
+    "logs": [],
+    "last_error": None,
+}
+
+def update_progress(days_done: int, total_days: int, msg: str) -> None:
+    _RUN_STATUS["days_done"] = days_done
+    _RUN_STATUS["total_days"] = total_days
+    _RUN_STATUS["message"] = msg
+    _RUN_STATUS["logs"].append(msg)
+    _RUN_STATUS["logs"] = _RUN_STATUS["logs"][-200:]
 
 
 def _resample_weekly(df1d: pl.DataFrame) -> pl.DataFrame:
@@ -55,10 +69,17 @@ def create_app(default_config: Path = Path("config/pilot.yaml")) -> Flask:
         files = sorted(str(p).replace("\\", "/") for p in cfg_dir.glob("*.yaml"))
         return jsonify({"configs": files})
 
+    @app.get("/api/symbols")
+    def list_db_symbols() -> Response:
+        cfg = load_config("config/default.yaml")
+        store = build_store(cfg)
+        syms = [s for s in store.list_symbols(cfg.run.base_timeframe) if not s.startswith("idx:")]
+        return jsonify({"symbols": sorted(syms)})
+
     @app.get("/api/status")
     def status() -> Response:
         return jsonify(_RUN_STATUS)
-
+    
     @app.post("/api/run_batch")
     def trigger_batch() -> Response:
         if _RUN_STATUS["running"]:
@@ -68,14 +89,31 @@ def create_app(default_config: Path = Path("config/pilot.yaml")) -> Flask:
         if not paths:
             return jsonify({"ok": False, "error": "Select at least one config"}), 400
 
+        selected_symbols = body.get("symbols") or []
+        session_name = body.get("session_name") or "Session_1"
+        cached_map = body.get("cached_symbols_by_config") or {}
+
         def _worker() -> None:
-            _RUN_STATUS.update({"running": True, "message": f"Running {len(paths)} config(s)...", "last_error": None})
+            _RUN_STATUS.update({
+                "running": True,
+                "message": f"Running {len(paths)} config(s)...",
+                "days_done": 0,
+                "total_days": 0,
+                "logs": [],
+                "last_error": None,
+            })
             try:
                 cfg = load_config(paths[0])
                 cal = build_calendar(cfg)
                 store = build_store(cfg)
                 outdir = cfg.storage.output_dir / "batch"
-                run_batch(paths, store, cal, outdir)
+                run_batch(
+                    paths, store, cal, outdir,
+                    symbols=selected_symbols,
+                    cached_map=cached_map,
+                    progress_cb=update_progress,
+                    session_name=session_name,
+                )
                 _RUN_STATUS.update({"running": False, "message": "Completed", "last_error": None})
             except Exception as exc:
                 _RUN_STATUS.update({"running": False, "message": "Failed", "last_error": str(exc)})
@@ -195,5 +233,56 @@ def create_app(default_config: Path = Path("config/pilot.yaml")) -> Flask:
             "signals": [],
         })
 
-    return app
+    @app.get("/api/symbols")
+    def api_symbols():
+        cfg = load_config("config/default.yaml")
+        store = build_store(cfg)
+        syms = [s for s in store.list_symbols("5m") if not s.startswith("idx:")]
+        return jsonify({"symbols": sorted(syms)})
 
+    @app.post("/api/session/rename")
+    def rename_session() -> Response:
+        body = request.get_json(silent=True) or {}
+        cfg = load_config("config/default.yaml")
+        hist = cfg.storage.output_dir / "batch" / "history"
+        old_p = hist / f"{body.get('old_name', '')}.json"
+        new_p = hist / f"{body.get('new_name', '')}.json"
+        if old_p.exists():
+            data = json.loads(old_p.read_text(encoding="utf-8"))
+            data["run_id"] = body.get("new_name", data.get("run_id"))
+            new_p.write_text(json.dumps(data), encoding="utf-8")
+            old_p.unlink()
+        return jsonify({"ok": True})
+
+    @app.post("/api/session/delete")
+    def delete_session() -> Response:
+        body = request.get_json(silent=True) or {}
+        cfg = load_config("config/default.yaml")
+        p = cfg.storage.output_dir / "batch" / "history" / f"{body.get('name', '')}.json"
+        if p.exists():
+            p.unlink()
+        return jsonify({"ok": True})
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    return app
