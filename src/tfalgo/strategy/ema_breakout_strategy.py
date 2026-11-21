@@ -7,6 +7,7 @@ with day-by-day + symbol progress callbacks for the Flask UI.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -180,6 +181,8 @@ class _Pos:
     sold_3r: bool = False
     sold_6r: bool = False
     realized_pnl: float = 0.0
+    events: list[dict[str, Any]] = field(default_factory=list)
+    stop_trail: list[tuple[str, float]] = field(default_factory=list)
 
 
 def _avg_entry(pos: _Pos) -> float:
@@ -246,6 +249,7 @@ def backtest_symbol(
         if pos is not None:
             if float(bar["low"]) <= pos.sl_price:
                 exit_px = pos.sl_price
+                pos.events.append({"ts": ts.isoformat(), "price": round(exit_px, 2), "label": f"Stop (-{int(round(pos.remaining_qty))})", "kind": "exit"})
                 pos.realized_pnl += pos.remaining_qty * (exit_px - _avg_entry(pos))
                 trades.append(_trade_dict(pos, ts, exit_px, "stop_hit", risk_inr))
                 pos = None
@@ -259,9 +263,13 @@ def backtest_symbol(
                 pos.entry_prices.append(p1r)
                 pos.remaining_qty += q2
                 pos.tranches_filled = 2
+                pos.events.append({"ts": ts.isoformat(), "price": round(p1r, 2), "label": f"E2 +{int(round(q2))} @ 1R", "kind": "add"})
                 if p["use_risk_neutral_sl"]:
                     rn_sl = _risk_neutral_stop(pos.entry_prices, pos.qty_by_tranche, risk_inr)
-                    pos.sl_price = max(pos.sl_price, pos.first_swing_low, rn_sl)
+                    new_sl = max(pos.sl_price, pos.first_swing_low, rn_sl)
+                    if new_sl > pos.sl_price + 0.01:
+                        pos.sl_price = new_sl
+                        pos.stop_trail.append((ts.isoformat(), round(new_sl, 2)))
 
             if pos.tranches_filled == 2 and tranches[2] > 0 and float(bar["high"]) >= p2r:
                 q3 = (pos.qty_by_tranche[0] / tranches[0]) * tranches[2]
@@ -269,8 +277,12 @@ def backtest_symbol(
                 pos.entry_prices.append(p2r)
                 pos.remaining_qty += q3
                 pos.tranches_filled = 3
+                pos.events.append({"ts": ts.isoformat(), "price": round(p2r, 2), "label": f"E3 +{int(round(q3))} @ 2R", "kind": "add"})
                 rn_sl = _risk_neutral_stop(pos.entry_prices, pos.qty_by_tranche, risk_inr)
-                pos.sl_price = max(pos.sl_price, pos.entry1_price, rn_sl)
+                new_sl = max(pos.sl_price, pos.entry1_price, rn_sl)
+                if new_sl > pos.sl_price + 0.01:
+                    pos.sl_price = new_sl
+                    pos.stop_trail.append((ts.isoformat(), round(new_sl, 2)))
 
             p3r = pos.entry1_price + 3.0 * pos.r_unit
             p6r = pos.entry1_price + 6.0 * pos.r_unit
@@ -282,24 +294,31 @@ def backtest_symbol(
                 pos.realized_pnl += sell_q * (p3r - avg_e)
                 pos.remaining_qty -= sell_q
                 pos.sold_3r = True
+                pos.events.append({"ts": ts.isoformat(), "price": round(p3r, 2), "label": f"Exit 1/3 (-{int(round(sell_q))}) @ 3R", "kind": "partial_exit"})
 
             if not pos.sold_6r and float(bar["high"]) >= p6r and pos.remaining_qty > 0:
                 sell_q = min(pos.remaining_qty, tot_filled / 3.0)
                 pos.realized_pnl += sell_q * (p6r - avg_e)
                 pos.remaining_qty -= sell_q
                 pos.sold_6r = True
+                pos.events.append({"ts": ts.isoformat(), "price": round(p6r, 2), "label": f"Exit 1/3 (-{int(round(sell_q))}) @ 6R", "kind": "partial_exit"})
 
             closed_trail = htf_trail[htf_trail.index < ts]
             if len(closed_trail) > 0:
                 ct = closed_trail.iloc[-1]
+                cand_sl = pos.sl_price
                 if pos.sold_3r and pos.sold_6r:
                     if pd.notna(ct["ema9"]) and pd.notna(ct["atr"]):
-                        pos.sl_price = max(pos.sl_price, float(ct["ema9"]) - atr_mult * float(ct["atr"]))
+                        cand_sl = max(cand_sl, float(ct["ema9"]) - atr_mult * float(ct["atr"]))
                 elif pd.notna(ct["ema21"]):
-                    pos.sl_price = max(pos.sl_price, float(ct["ema21"]))
+                    cand_sl = max(cand_sl, float(ct["ema21"]))
+                if cand_sl > pos.sl_price + 0.05:
+                    pos.sl_price = cand_sl
+                    pos.stop_trail.append((ts.isoformat(), round(cand_sl, 2)))
 
             if holding_mode == "mis" and ts.strftime("%H:%M") >= "15:15":
                 exit_px = float(bar["close"])
+                pos.events.append({"ts": ts.isoformat(), "price": round(exit_px, 2), "label": f"MIS Exit (-{int(round(pos.remaining_qty))})", "kind": "exit"})
                 pos.realized_pnl += pos.remaining_qty * (exit_px - avg_e)
                 trades.append(_trade_dict(pos, ts, exit_px, "mis_squareoff", risk_inr))
                 pos = None
@@ -322,12 +341,15 @@ def backtest_symbol(
                     symbol=symbol, trade_id=tid, entry_ts=ts, entry1_price=entry_px,
                     initial_sl=init_sl, r_unit=r_unit, first_swing_low=sw_low, pattern=pat,
                     qty_by_tranche=[q1], entry_prices=[entry_px], remaining_qty=q1, sl_price=init_sl,
+                    events=[{"ts": ts.isoformat(), "price": round(entry_px, 2), "label": f"E1 ({int(round(q1))} qty)", "kind": "entry"}],
+                    stop_trail=[(ts.isoformat(), round(init_sl, 2))],
                 )
                 tid += 1
                 pending_setup = None
 
     if pos is not None and pos.remaining_qty > 0:
         exit_px = float(df_5m.iloc[-1]["close"])
+        pos.events.append({"ts": df_5m.index[-1].isoformat(), "price": round(exit_px, 2), "label": f"EOD Exit (-{int(round(pos.remaining_qty))})", "kind": "exit"})
         pos.realized_pnl += pos.remaining_qty * (exit_px - _avg_entry(pos))
         trades.append(_trade_dict(pos, df_5m.index[-1], exit_px, "eod_close", risk_inr))
 
@@ -350,6 +372,8 @@ def _trade_dict(pos: _Pos, exit_ts: pd.Timestamp, exit_px: float, reason: str, r
         "exit_reason": reason,
         "pattern": pos.pattern,
         "regime_at_entry": "trend",
+        "stop_trail": json.dumps(pos.stop_trail),
+        "events": json.dumps(pos.events),
     }
 
 

@@ -1,5 +1,12 @@
 let STRATEGIES = [];
 let BENCH = { dates: [], closes: [] };
+let STOCK_BENCH = {};
+let SELECTED_BENCHMARKS = new Set(["NIFTY_50"]);
+const BENCH_COLORS = ["#94a3b8", "#f59e0b", "#10b981", "#ec4899", "#8b5cf6", "#06b6d4", "#f97316", "#84cc16"];
+let calloutOffsets = {};
+let replayTimer = null;
+let replayLimitIdx = null;
+let replaySpeed = 1.0;
 let state = [];
 let activeTrades = [];
 let sortCol = "entry_ts";
@@ -8,6 +15,16 @@ let currentTrade = null;
 let currentTf = "5m";
 let cachedCandles = [];
 let cachedPatternShapes = {};
+let chartExtraDaysBefore = 0;
+let chartExtraDaysAfter = 0;
+let chartMaximized = false;
+let EMA_COLORS = (() => {
+  try {
+    return JSON.parse(localStorage.getItem("tfalgo_ema_colors_v1") || "null") || { ema9: "#8b5cf6", ema21: "#f59e0b", ema50: "#0d9488" };
+  } catch {
+    return { ema9: "#8b5cf6", ema21: "#f59e0b", ema50: "#0d9488" };
+  }
+})();
 
 // TradingView-style chart viewport & measurement state
 let viewStart = 0;
@@ -267,6 +284,18 @@ function injectRunnerStyles() {
     html.tf-dark .rn-btn.danger { background: #450a0a; border-color: #7f1d1d; color: #fecaca; }
     html.tf-dark .rn-prog-top { color: #f8fafc; }
     html.tf-dark .rn-prog-track { background: #334155; }
+    html.tf-dark .rn-sym-done { background: #14532d !important; color: #86efac !important; }
+    html.tf-dark td.pos, html.tf-dark .pos, html.tf-dark b.pos { color: #4ade80 !important; }
+    html.tf-dark td.neg, html.tf-dark .neg, html.tf-dark b.neg { color: #f87171 !important; }
+    html.tf-dark #tradeModal > div, html.tf-dark #tradeModal .modal-dialog, html.tf-dark #tradeModal .modal-body, html.tf-dark #tradeModal .modal-header {
+      background: #111827 !important; color: #e2e8f0 !important; border-color: #1f2937 !important;
+    }
+    html.tf-dark .tf-btn { background: #1e293b !important; color: #e2e8f0 !important; border-color: #334155 !important; }
+    html.tf-dark .tf-btn.active { background: #2563eb !important; color: #fff !important; }
+    .tf-modal-max { width: 98vw !important; max-width: 98vw !important; height: 94vh !important; max-height: 94vh !important; display: flex; flex-direction: column; }
+    .tf-modal-max #candleSvg { flex: 1 1 auto; width: 100%; height: 74vh !important; }
+    .tf-chart-tools { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-left: 10px; }
+    .tf-color-pick { width: 22px; height: 22px; padding: 0; border: 1px solid #64748b; border-radius: 4px; cursor: pointer; background: transparent; vertical-align: middle; }
   `;
   document.head.appendChild(st);
 }
@@ -887,6 +916,8 @@ async function loadRun(runId) {
     const run = await (await fetch("/api/run/" + encodeURIComponent(runId))).json();
     STRATEGIES = run.strategies || [];
     BENCH = run.bench || { dates: [], closes: [] };
+    STOCK_BENCH = run.stock_bench || {};
+    injectBenchmarkDropdown();
     const capEl = document.getElementById("capInput");
     if (capEl) capEl.value = Math.round(run.initial_capital || 1000000);
     state = STRATEGIES.map(() => ({
@@ -985,11 +1016,14 @@ function recalc() {
     (s.trades || []).forEach(tr => {
       const p = (tr.net_pnl || 0) * scale;
       c += p;
+      const durMs = (tr.entry_ts && tr.exit_ts) ? Math.max(0, new Date(tr.exit_ts) - new Date(tr.entry_ts)) : 0;
       activeTrades.push({
         ...tr,
         strategy: s.name,
         uid: s.name + "_" + tr.trade_id,
         scaled_pnl: p,
+        duration_ms: durMs,
+        duration_str: fmtTradeDuration(tr.entry_ts, tr.exit_ts),
       });
     });
     totPnl += c;
@@ -1006,8 +1040,37 @@ function recalc() {
   });
 
   const wins = activeTrades.filter(t => t.scaled_pnl > 0);
+  const losses = activeTrades.filter(t => t.scaled_pnl <= 0);
   const gp = wins.reduce((a, t) => a + t.scaled_pnl, 0);
-  const gl = activeTrades.filter(t => t.scaled_pnl <= 0).reduce((a, t) => a + t.scaled_pnl, 0);
+  const glAbs = Math.abs(losses.reduce((a, t) => a + t.scaled_pnl, 0));
+  const netPnlAll = gp - glAbs;
+  const nT = activeTrades.length;
+  const avgWin = wins.length ? gp / wins.length : 0;
+  const avgLoss = losses.length ? glAbs / losses.length : 0;
+  const payoff = avgLoss > 0 ? avgWin / avgLoss : 0;
+  const expInr = nT ? netPnlAll / nT : 0;
+  const expR = nT ? activeTrades.reduce((a, t) => a + Number(t.money_r || 0), 0) / nT : 0;
+  const bestInr = nT ? Math.max(...activeTrades.map(t => t.scaled_pnl)) : 0;
+  const worstInr = nT ? Math.min(...activeTrades.map(t => t.scaled_pnl)) : 0;
+  const bestR = nT ? Math.max(...activeTrades.map(t => Number(t.money_r || 0))) : 0;
+  const worstR = nT ? Math.min(...activeTrades.map(t => Number(t.money_r || 0))) : 0;
+
+  const chrono = [...activeTrades].sort((a, b) => String(a.exit_ts || "").localeCompare(String(b.exit_ts || "")));
+  let maxCW = 0, maxCL = 0, cw = 0, cl = 0;
+  chrono.forEach(t => {
+    if (t.scaled_pnl > 0) { cw++; cl = 0; if (cw > maxCW) maxCW = cw; }
+    else { cl++; cw = 0; if (cl > maxCL) maxCL = cl; }
+  });
+
+  const holdDays = t => {
+    if (!t.entry_ts || !t.exit_ts) return 0;
+    const ms = new Date(t.exit_ts) - new Date(t.entry_ts);
+    return Math.max(0, ms / 86400000);
+  };
+  const avgHoldW = wins.length ? wins.reduce((a, t) => a + holdDays(t), 0) / wins.length : 0;
+  const avgHoldL = losses.length ? losses.reduce((a, t) => a + holdDays(t), 0) / losses.length : 0;
+  const avgHoldAll = nT ? activeTrades.reduce((a, t) => a + holdDays(t), 0) / nT : 0;
+
   const meanR = rets.length ? rets.reduce((a, b) => a + b, 0) / rets.length : 0;
   const stdR = rets.length > 1
     ? Math.sqrt(rets.reduce((a, b) => a + (b - meanR) ** 2, 0) / (rets.length - 1))
@@ -1019,9 +1082,27 @@ function recalc() {
     ["Nifty 50 Return", (benchPct[benchPct.length - 1] || 0).toFixed(2) + "%"],
     ["Max Drawdown", maxDd.toFixed(2) + "%"],
     ["Sharpe", (stdR > 0 ? (meanR / stdR) * Math.sqrt(252) : 0).toFixed(2)],
-    ["Trades", activeTrades.length],
-    ["Win Rate", (activeTrades.length ? (wins.length / activeTrades.length) * 100 : 0).toFixed(1) + "%"],
-    ["Profit Factor", (gl < 0 ? gp / Math.abs(gl) : (gp > 0 ? 999 : 0)).toFixed(2)],
+    ["Total Closed Campaigns", nT],
+    ["Winning Trades", wins.length],
+    ["Losing Trades (incl. BE)", losses.length],
+    ["Win Rate (%)", (nT ? (wins.length / nT) * 100 : 0).toFixed(1) + "%"],
+    ["Avg Win (INR)", "INR " + Math.round(avgWin).toLocaleString()],
+    ["Avg Loss (INR)", "INR " + Math.round(avgLoss).toLocaleString()],
+    ["Payoff Ratio", payoff.toFixed(2)],
+    ["Expectancy / Trade", "INR " + Math.round(expInr).toLocaleString()],
+    ["Expectancy (R)", expR.toFixed(2) + "R"],
+    ["Gross Profit", "INR " + Math.round(gp).toLocaleString()],
+    ["Gross Loss", "INR " + Math.round(glAbs).toLocaleString()],
+    ["Profit Factor", (glAbs > 0 ? gp / glAbs : (gp > 0 ? 999 : 0)).toFixed(2)],
+    ["Best Trade (INR)", "INR " + Math.round(bestInr).toLocaleString()],
+    ["Best Trade (R)", bestR.toFixed(2) + "R"],
+    ["Worst Trade (INR)", "INR " + Math.round(worstInr).toLocaleString()],
+    ["Worst Trade (R)", worstR.toFixed(2) + "R"],
+    ["Max Consec. Wins", maxCW],
+    ["Max Consec. Losses", maxCL],
+    ["Avg Hold Days (Win)", avgHoldW.toFixed(1)],
+    ["Avg Hold Days (Loss)", avgHoldL.toFixed(1)],
+    ["Avg Hold Days (All)", avgHoldAll.toFixed(1)],
   ];
 
   const kpiGrid = document.getElementById("kpiGrid");
@@ -1033,6 +1114,57 @@ function recalc() {
 
   populateFilters();
   applyFilters();
+}
+
+function injectBenchmarkDropdown() {
+  const showBenchEl = document.getElementById("showBench");
+  const anchor = showBenchEl ? showBenchEl.parentElement : null;
+  if (!anchor) return;
+  let wrap = document.getElementById("tfBenchMultiWrap");
+  if (!wrap) {
+    wrap = document.createElement("span");
+    wrap.id = "tfBenchMultiWrap";
+    wrap.style.cssText = "position:relative;display:inline-block;margin-left:10px;";
+    anchor.insertAdjacentElement("afterend", wrap);
+  }
+  const syms = Object.keys(STOCK_BENCH).sort();
+  const opts = ["NIFTY_50", ...syms];
+  wrap.innerHTML = `
+    <button type="button" class="rn-btn" onclick="var m=document.getElementById('tfBenchMenu');m.style.display=m.style.display==='block'?'none':'block';">
+      Compare (${SELECTED_BENCHMARKS.size}) &#9662;
+    </button>
+    <div id="tfBenchMenu" style="display:none;position:absolute;top:110%;left:0;z-index:50;min-width:190px;max-height:240px;overflow-y:auto;background:var(--card,#fff);border:1px solid var(--border,#cbd5e1);border-radius:8px;padding:8px;box-shadow:0 8px 20px rgba(0,0,0,0.18);">
+      ${opts.map((o, idx) => `
+        <label style="display:flex;align-items:center;gap:7px;padding:4px 6px;font-size:12px;cursor:pointer;">
+          <input type="checkbox" ${SELECTED_BENCHMARKS.has(o) ? "checked" : ""} onchange="toggleBenchmark('${o}', this.checked)">
+          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${BENCH_COLORS[idx % BENCH_COLORS.length]};"></span>
+          <span>${o === "NIFTY_50" ? "Nifty 50" : o}</span>
+        </label>
+      `).join("")}
+    </div>
+  `;
+}
+
+function toggleBenchmark(name, checked) {
+  if (checked) SELECTED_BENCHMARKS.add(name);
+  else SELECTED_BENCHMARKS.delete(name);
+  const showBenchEl = document.getElementById("showBench");
+  if (name === "NIFTY_50" && showBenchEl) showBenchEl.checked = checked;
+  injectBenchmarkDropdown();
+  recalc();
+}
+
+function fmtTradeDuration(entryTs, exitTs) {
+  if (!entryTs || !exitTs) return "-";
+  const ms = Math.max(0, new Date(exitTs) - new Date(entryTs));
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return mins + "m";
+  const hrs = Math.floor(mins / 60);
+  const remM = mins % 60;
+  if (hrs < 24) return hrs + "h" + (remM ? " " + remM + "m" : "");
+  const days = Math.floor(hrs / 24);
+  const remH = hrs % 24;
+  return days + "d" + (remH ? " " + remH + "h" : "");
 }
 
 function drawPctChart(portPct, dd, dates, benchPct) {
@@ -1050,8 +1182,30 @@ function drawPctChart(portPct, dd, dates, benchPct) {
   const lblCol = DARK_MODE ? "#94a3b8" : "#64748b";
   const showBenchEl = document.getElementById("showBench");
   const showB = !!(showBenchEl && showBenchEl.checked && benchPct.length === portPct.length);
+  if (showBenchEl && showBenchEl.checked) SELECTED_BENCHMARKS.add("NIFTY_50");
+
+  const extraSeries = [];
+  if (showB && SELECTED_BENCHMARKS.has("NIFTY_50")) {
+    extraSeries.push({ name: "Nifty 50", pct: benchPct, color: BENCH_COLORS[0], dashed: true });
+  }
+  const stockKeys = Object.keys(STOCK_BENCH).sort();
+  stockKeys.forEach((sym, idx) => {
+    if (SELECTED_BENCHMARKS.has(sym)) {
+      const closes = STOCK_BENCH[sym] || [];
+      if (closes.length === portPct.length && closes[0] > 0) {
+        extraSeries.push({
+          name: sym,
+          pct: closes.map(c => (c / closes[0] - 1) * 100),
+          color: BENCH_COLORS[(idx + 1) % BENCH_COLORS.length],
+          dashed: false,
+        });
+      }
+    }
+  });
+
   const W = 1100, H = 320, P = 56, R = 20;
-  const all = showB ? portPct.concat(benchPct, [0]) : portPct.concat([0]);
+  let all = portPct.concat([0]);
+  extraSeries.forEach(s => { all = all.concat(s.pct); });
   let ymin = Math.min(...all);
   let ymax = Math.max(...all);
   if (ymax === ymin) {
@@ -1073,11 +1227,14 @@ function drawPctChart(portPct, dd, dates, benchPct) {
   const y0 = my(0);
   g += `<line x1="${P}" y1="${y0}" x2="${W - R}" y2="${y0}" stroke="#94a3b8" stroke-width="1"/>`;
   const pEq = portPct.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ");
-  const pB = showB
-    ? `<polyline fill="none" stroke="#94a3b8" stroke-width="1.6" stroke-dasharray="5,4" points="${benchPct.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ")}"/>`
-    : "";
+  const pB = extraSeries.map(s =>
+    `<polyline fill="none" stroke="${s.color}" stroke-width="1.6" ${s.dashed ? "stroke-dasharray=\"5,4\"" : ""} points="${s.pct.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ")}"/>`
+  ).join("");
+  const legHtml = extraSeries.map((s, idx) =>
+    `<text x="${P + 10 + idx * 115}" y="16" font-size="10.5" font-weight="600" fill="${s.color}">&#9632; ${s.name}: ${(s.pct[s.pct.length - 1] || 0).toFixed(1)}%</text>`
+  ).join("");
 
-  eSvg.innerHTML = `${g}${pB}<polyline fill="none" stroke="#3b82f6" stroke-width="2.4" points="${pEq}"/>
+  eSvg.innerHTML = `${g}${pB}${legHtml}<polyline fill="none" stroke="#3b82f6" stroke-width="2.4" points="${pEq}"/>
     <text x="${P}" y="${H - 8}" font-size="11" fill="${lblCol}">${dates[0] || ""}</text>
     <text x="${W - R}" y="${H - 8}" font-size="11" text-anchor="end" fill="${lblCol}">${dates[dates.length - 1] || ""}</text>`;
 
@@ -1229,12 +1386,24 @@ function applyFilters() {
 
   const rowsEl = document.getElementById("tradeRows");
   if (rowsEl) {
+    const theadRow = rowsEl.parentElement ? rowsEl.parentElement.querySelector("thead tr") : null;
+    if (theadRow && !theadRow.querySelector("[data-col='duration_ms']")) {
+      const th = document.createElement("th");
+      th.setAttribute("data-col", "duration_ms");
+      th.style.cursor = "pointer";
+      th.textContent = "Duration";
+      th.onclick = () => sortBy("duration_ms");
+      const exitTh = theadRow.children[4];
+      if (exitTh && exitTh.nextSibling) theadRow.insertBefore(th, exitTh.nextSibling);
+      else theadRow.appendChild(th);
+    }
     rowsEl.innerHTML = list.map(t => `<tr>
       <td class="left"><span class="trade-link" onclick="openTrade('${t.uid}')">#${t.trade_id}</span></td>
       <td class="left">${t.strategy}</td>
       <td class="left"><b>${t.symbol}</b></td>
       <td class="left">${(t.entry_ts || "").slice(0, 16).replace("T", " ")}</td>
       <td class="left">${(t.exit_ts || "").slice(0, 16).replace("T", " ")}</td>
+      <td>${t.duration_str || "-"}</td>
       <td>${Number(t.avg_entry || 0).toFixed(2)}</td>
       <td>${Number(t.avg_exit || 0).toFixed(2)}</td>
       <td>${Number(t.initial_stop || 0).toFixed(2)}</td>
@@ -1262,12 +1431,18 @@ function openTrade(uid) {
       ` &nbsp;<span style="color:#64748b;font-size:11.5px;">(Scroll: Zoom | Drag: Pan | Click 2 pts: Measure % | DblClick: Reset)</span>`;
   }
 
+  stopReplay(true);
+  calloutOffsets = {};
+  chartExtraDaysBefore = 0;
+  chartExtraDaysAfter = 0;
+  injectChartToolbarControls();
   const modal = document.getElementById("tradeModal");
   if (modal) modal.classList.add("open");
   fetchTradeChart();
 }
 
 function closeModal() {
+  stopReplay(true);
   const modal = document.getElementById("tradeModal");
   if (modal) modal.classList.remove("open");
 }
@@ -1363,13 +1538,130 @@ function zoomCandles(factor, anchorRatio) {
   redrawActiveTrade();
 }
 
+function injectChartToolbarControls() {
+  if (document.getElementById("tfChartTools")) return;
+  const togPat = document.getElementById("togPat");
+  const bar = togPat ? togPat.parentElement : null;
+  if (!bar) return;
+  const wrap = document.createElement("span");
+  wrap.id = "tfChartTools";
+  wrap.className = "tf-chart-tools";
+  wrap.innerHTML = `
+    <button type="button" class="rn-btn" onclick="shiftChartWindow(-7, 0)">&laquo; Load Earlier</button>
+    <button type="button" class="rn-btn" onclick="shiftChartWindow(0, 7)">Load Later &raquo;</button>
+    <label style="font-size:11.5px;">E9 <input type="color" class="tf-color-pick" value="${EMA_COLORS.ema9}" oninput="setEmaColor('ema9', this.value)"></label>
+    <label style="font-size:11.5px;">E21 <input type="color" class="tf-color-pick" value="${EMA_COLORS.ema21}" oninput="setEmaColor('ema21', this.value)"></label>
+    <label style="font-size:11.5px;">E50 <input type="color" class="tf-color-pick" value="${EMA_COLORS.ema50}" oninput="setEmaColor('ema50', this.value)"></label>
+    <button type="button" id="tfReplayBtn" class="rn-btn primary" onclick="toggleReplay()">&#9654; Replay</button>
+    <button type="button" class="rn-btn" onclick="stepReplay(-1)">&#9664;</button>
+    <button type="button" class="rn-btn" onclick="stepReplay(1)">&#9654;&#124;</button>
+    <select id="tfReplaySpeed" onchange="setReplaySpeed(this.value)" style="padding:4px 6px;border-radius:6px;font-size:12px;">
+      <option value="1">1x</option>
+      <option value="1.5">1.5x</option>
+      <option value="2">2x</option>
+      <option value="3">3x</option>
+    </select>
+    <button type="button" class="rn-btn" onclick="stopReplay(true)">Reset Replay</button>
+    <button type="button" id="tfMaxChartBtn" class="rn-btn" onclick="toggleMaximizeChart()">⛶ Maximize</button>
+  `;
+  bar.appendChild(wrap);
+}
+
+function stopReplay(resetFull) {
+  if (replayTimer) {
+    clearInterval(replayTimer);
+    replayTimer = null;
+  }
+  const btn = document.getElementById("tfReplayBtn");
+  if (btn) btn.innerHTML = "&#9654; Replay";
+  if (resetFull) {
+    replayLimitIdx = null;
+    redrawActiveTrade();
+  }
+}
+
+function setReplaySpeed(val) {
+  replaySpeed = parseFloat(val) || 1.0;
+  if (replayTimer) {
+    stopReplay(false);
+    toggleReplay();
+  }
+}
+
+function stepReplay(delta) {
+  stopReplay(false);
+  if (!cachedCandles.length) return;
+  if (replayLimitIdx === null) {
+    const eKey = (currentTrade.entry_ts || "").slice(0, 16);
+    const eIdx = eKey ? cachedCandles.findIndex(b => b.t.slice(0, 16) >= eKey) : 20;
+    replayLimitIdx = Math.max(5, (eIdx >= 0 ? eIdx : 20) - 20);
+  }
+  replayLimitIdx = Math.max(5, Math.min(cachedCandles.length - 1, replayLimitIdx + delta));
+  redrawActiveTrade();
+}
+
+function toggleReplay() {
+  if (replayTimer) {
+    stopReplay(false);
+    return;
+  }
+  if (!cachedCandles.length) return;
+  if (replayLimitIdx === null || replayLimitIdx >= cachedCandles.length - 1) {
+    const eKey = (currentTrade.entry_ts || "").slice(0, 16);
+    const eIdx = eKey ? cachedCandles.findIndex(b => b.t.slice(0, 16) >= eKey) : 20;
+    replayLimitIdx = Math.max(5, (eIdx >= 0 ? eIdx : 20) - 20);
+  }
+  const btn = document.getElementById("tfReplayBtn");
+  if (btn) btn.innerHTML = "&#9208; Pause";
+  const delay = Math.max(80, Math.round(600 / replaySpeed));
+  replayTimer = setInterval(() => {
+    if (replayLimitIdx >= cachedCandles.length - 1) {
+      stopReplay(false);
+      return;
+    }
+    replayLimitIdx += 1;
+    if (replayLimitIdx > viewEnd) {
+      viewEnd = replayLimitIdx;
+      viewStart = Math.max(0, viewEnd - 120);
+    }
+    redrawActiveTrade();
+  }, delay);
+}
+
+function setEmaColor(key, col) {
+  EMA_COLORS[key] = col;
+  try { localStorage.setItem("tfalgo_ema_colors_v1", JSON.stringify(EMA_COLORS)); } catch {}
+  redrawActiveTrade();
+}
+
+function toggleMaximizeChart() {
+  chartMaximized = !chartMaximized;
+  const modal = document.getElementById("tradeModal");
+  const card = modal ? modal.firstElementChild : null;
+  if (card) card.classList.toggle("tf-modal-max", chartMaximized);
+  const btn = document.getElementById("tfMaxChartBtn");
+  if (btn) btn.textContent = chartMaximized ? "🗗 Restore" : "⛶ Maximize";
+}
+
+function shiftChartWindow(dBefore, dAfter) {
+  chartExtraDaysBefore += dBefore;
+  chartExtraDaysAfter += dAfter;
+  fetchTradeChart();
+}
+
 async function fetchTradeChart() {
   if (!currentTrade) return;
+  const shiftDate = (iso, deltaDays) => {
+    const d = new Date((iso || "").slice(0, 10) + "T00:00:00Z");
+    if (Number.isNaN(d.getTime())) return (iso || "").slice(0, 10);
+    d.setUTCDate(d.getUTCDate() + deltaDays);
+    return d.toISOString().slice(0, 10);
+  };
   const q = new URLSearchParams({
     symbol: currentTrade.symbol,
     tf: currentTf,
-    entry: (currentTrade.entry_ts || "").slice(0, 10),
-    exit: (currentTrade.exit_ts || "").slice(0, 10),
+    entry: shiftDate(currentTrade.entry_ts, chartExtraDaysBefore),
+    exit: shiftDate(currentTrade.exit_ts, chartExtraDaysAfter),
     pattern: currentTrade.pattern || "none",
   });
   try {
@@ -1400,9 +1692,10 @@ function drawCandles(allBars, pat) {
   const lblCol = DARK_MODE ? "#94a3b8" : "#64748b";
   const hudTextCol = DARK_MODE ? "#e2e8f0" : "#334155";
 
-  viewStart = Math.max(0, Math.min(allBars.length - 1, viewStart));
-  viewEnd = Math.max(viewStart, Math.min(allBars.length - 1, viewEnd || (allBars.length - 1)));
-  const bars = allBars.slice(viewStart, viewEnd + 1);
+  const activeBarsPool = replayLimitIdx !== null ? allBars.slice(0, replayLimitIdx + 1) : allBars;
+  viewStart = Math.max(0, Math.min(activeBarsPool.length - 1, viewStart));
+  viewEnd = Math.max(viewStart, Math.min(activeBarsPool.length - 1, replayLimitIdx !== null ? activeBarsPool.length - 1 : (viewEnd || (activeBarsPool.length - 1))));
+  const bars = activeBarsPool.slice(viewStart, viewEnd + 1);
 
   const togEmas = document.getElementById("togEmas");
   const togVol = document.getElementById("togVol");
@@ -1467,7 +1760,7 @@ function drawCandles(allBars, pat) {
   }
 
   if (showE) {
-    [["ema9", "#8b5cf6"], ["ema21", "#f59e0b"], ["ema50", "#0d9488"]].forEach(([k, col]) => {
+    [["ema9", EMA_COLORS.ema9], ["ema21", EMA_COLORS.ema21], ["ema50", EMA_COLORS.ema50]].forEach(([k, col]) => {
       const pts = bars.map((b, i) => (b[k] != null ? `${mx(i).toFixed(1)},${my(b[k]).toFixed(1)}` : null)).filter(Boolean);
       if (pts.length > 1) out += `<polyline fill="none" stroke="${col}" stroke-width="1.6" points="${pts.join(" ")}"/>`;
     });
@@ -1513,6 +1806,29 @@ function drawCandles(allBars, pat) {
   }
 
   out += `<text x="${P}" y="${H - 10}" font-size="11" fill="${lblCol}">${bars[0].t.slice(0, 16).replace("T", " ")}</text><text x="${W - R}" y="${H - 10}" font-size="11" text-anchor="end" fill="${lblCol}">${bars[bars.length - 1].t.slice(0, 16).replace("T", " ")} (${bars.length}/${allBars.length} bars)</text>`;
+  // Parse Trailing SL steps (T1, T2, ...)
+  let trailPts = [];
+  try {
+    const rawT = typeof currentTrade.stop_trail === "string" ? JSON.parse(currentTrade.stop_trail || "[]") : (currentTrade.stop_trail || []);
+    if (Array.isArray(rawT)) trailPts = rawT;
+  } catch {}
+  if (trailPts.length) {
+    const lastVisibleTs = bars[bars.length - 1].t.slice(0, 16);
+    const visTrail = trailPts.filter(([tsStr]) => String(tsStr).slice(0, 16) <= lastVisibleTs);
+    for (let k = 0; k < visTrail.length; k++) {
+      const [ts0, sl0] = visTrail[k];
+      const i0 = Math.max(0, bars.findIndex(b => b.t.slice(0, 16) >= String(ts0).slice(0, 16)));
+      const i1 = (k + 1 < visTrail.length)
+        ? Math.max(i0, bars.findIndex(b => b.t.slice(0, 16) >= String(visTrail[k + 1][0]).slice(0, 16)))
+        : bars.length - 1;
+      const ysl = my(sl0);
+      if (ysl >= T && ysl <= H - B) {
+        out += `<line x1="${mx(i0)}" y1="${ysl}" x2="${mx(i1)}" y2="${ysl}" stroke="#f97316" stroke-width="1.8" stroke-dasharray="4,3"/>`;
+        out += `<text x="${mx(i0) + 4}" y="${ysl - 4}" font-size="10" font-weight="700" fill="#f97316">T${k + 1} (${Number(sl0).toFixed(2)})</text>`;
+      }
+    }
+  }
+
   svg.innerHTML = out;
 
   const overlay = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -1552,7 +1868,7 @@ function drawCandles(allBars, pat) {
       const chg = prevBar && prevBar.c ? ((hudBar.c - prevBar.c) / prevBar.c) * 100 : 0;
       const chgCol = chg >= 0 ? "#16a34a" : "#dc2626";
       const eTxt = showE
-        ? ` | <tspan fill="#8b5cf6">E9:${hudBar.ema9 != null ? hudBar.ema9.toFixed(1) : "-"}</tspan> <tspan fill="#f59e0b">E21:${hudBar.ema21 != null ? hudBar.ema21.toFixed(1) : "-"}</tspan> <tspan fill="#0d9488">E50:${hudBar.ema50 != null ? hudBar.ema50.toFixed(1) : "-"}</tspan>`
+        ? ` | <tspan fill="${EMA_COLORS.ema9}">E9:${hudBar.ema9 != null ? hudBar.ema9.toFixed(1) : "-"}</tspan> <tspan fill="${EMA_COLORS.ema21}">E21:${hudBar.ema21 != null ? hudBar.ema21.toFixed(1) : "-"}</tspan> <tspan fill="${EMA_COLORS.ema50}">E50:${hudBar.ema50 != null ? hudBar.ema50.toFixed(1) : "-"}</tspan>`
         : "";
       h += `<text x="${P + 4}" y="18" font-size="11" font-weight="600" fill="${hudTextCol}">${hudBar.t.slice(0, 16).replace("T", " ")} | O:${Number(hudBar.o).toFixed(2)} H:${Number(hudBar.h).toFixed(2)} L:${Number(hudBar.l).toFixed(2)} C:${Number(hudBar.c).toFixed(2)} <tspan fill="${chgCol}">(${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%)</tspan> V:${Math.round(hudBar.v || 0).toLocaleString()}${eTxt}</text>`;
     }
@@ -1590,6 +1906,33 @@ function drawCandles(allBars, pat) {
       const lx = Math.min(W - 120, Math.max(P, cur.x - 55));
       h += `<rect x="${lx}" y="${H - B + 2}" width="110" height="16" rx="3" fill="#0f172a"/><text x="${lx + 55}" y="${H - B + 13}" font-size="9.5" text-anchor="middle" fill="#fff">${b.t.slice(5, 16).replace("T", " ")}</text>`;
     }
+    // Draggable Trade Journey Callouts (Entries, Pyramid Adds, Partial Exits, Final Exit)
+    let evList = [];
+    try {
+      const rawE = typeof currentTrade.events === "string" ? JSON.parse(currentTrade.events || "[]") : (currentTrade.events || []);
+      if (Array.isArray(rawE)) evList = rawE;
+    } catch {}
+    if (!evList.length) {
+      if (currentTrade.entry_ts) evList.push({ ts: currentTrade.entry_ts, price: currentTrade.avg_entry, label: `E1 @ ${Number(currentTrade.avg_entry || 0).toFixed(2)}`, kind: "entry" });
+      if (currentTrade.exit_ts) evList.push({ ts: currentTrade.exit_ts, price: currentTrade.avg_exit, label: `Exit @ ${Number(currentTrade.avg_exit || 0).toFixed(2)}`, kind: "exit" });
+    }
+    const lastVis = bars[bars.length - 1].t.slice(0, 16);
+    evList.forEach((ev, idx) => {
+      const k = String(ev.ts || "").slice(0, 16);
+      if (!k || k > lastVis) return;
+      const bIdx = bars.findIndex(b => b.t.slice(0, 16) >= k);
+      if (bIdx < 0) return;
+      const ax = mx(bIdx), ay = my(ev.price);
+      const cid = "c_" + idx;
+      const off = calloutOffsets[cid] || { dx: (idx % 2 === 0 ? -55 : 55), dy: -34 - (idx % 3) * 22 };
+      const bx = Math.max(P + 4, Math.min(W - R - 134, ax + off.dx));
+      const by = Math.max(T + 4, Math.min(H - B - 24, ay + off.dy));
+      const fill = ev.kind === "entry" ? "#1d4ed8" : ev.kind === "add" ? "#7c3aed" : ev.kind === "partial_exit" ? "#059669" : "#b45309";
+      h += `<line x1="${ax}" y1="${ay}" x2="${bx + 65}" y2="${by + 10}" stroke="${fill}" stroke-width="1" stroke-dasharray="2,2"/>`;
+      h += `<circle cx="${ax}" cy="${ay}" r="3.5" fill="${fill}" stroke="#fff" stroke-width="1"/>`;
+      h += `<g data-callout="${cid}" style="cursor:move;"><rect x="${bx}" y="${by}" width="132" height="20" rx="5" fill="${fill}" opacity="0.95"/><text x="${bx + 66}" y="${by + 13.5}" font-size="10" font-weight="700" text-anchor="middle" fill="#fff">${ev.label}</text></g>`;
+    });
+
     overlay.innerHTML = h;
   };
 
@@ -1599,8 +1942,21 @@ function drawCandles(allBars, pat) {
   let dragStartView = 0;
   let didDrag = false;
 
+  let dragCalloutId = null;
+  let dragCalloutStart = null;
   svg.onmousedown = evt => {
     if (evt.button !== 0) return;
+    const cg = evt.target && evt.target.closest ? evt.target.closest("[data-callout]") : null;
+    if (cg) {
+      dragCalloutId = cg.getAttribute("data-callout");
+      const rect = svg.getBoundingClientRect();
+      dragCalloutStart = {
+        x: evt.clientX, y: evt.clientY,
+        sx: W / Math.max(1, rect.width), sy: H / Math.max(1, rect.height),
+        base: { ...(calloutOffsets[dragCalloutId] || { dx: 0, dy: -36 }) },
+      };
+      return;
+    }
     dragStartX = evt.clientX;
     dragStartView = viewStart;
     didDrag = false;
@@ -1608,6 +1964,13 @@ function drawCandles(allBars, pat) {
   };
 
   svg.onmousemove = evt => {
+    if (dragCalloutId && dragCalloutStart) {
+      const dx = (evt.clientX - dragCalloutStart.x) * dragCalloutStart.sx;
+      const dy = (evt.clientY - dragCalloutStart.y) * dragCalloutStart.sy;
+      calloutOffsets[dragCalloutId] = { dx: dragCalloutStart.base.dx + dx, dy: dragCalloutStart.base.dy + dy };
+      drawOverlay(lastMouse);
+      return;
+    }
     if (dragStartX !== null) {
       const dx = evt.clientX - dragStartX;
       if (Math.abs(dx) > 4) {
@@ -1639,6 +2002,7 @@ function drawCandles(allBars, pat) {
   };
 
   svg.onmouseup = evt => {
+    if (dragCalloutId) { dragCalloutId = null; dragCalloutStart = null; return; }
     svg.style.cursor = "crosshair";
     if (dragStartX !== null && !didDrag) {
       const pt = toPt(evt);

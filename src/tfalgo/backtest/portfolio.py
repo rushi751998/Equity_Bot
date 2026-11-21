@@ -80,6 +80,7 @@ class ActiveTradeMeta:
     time_stop_flag: bool = False
     gap_loss_flag: bool = False
     stop_trail: list[tuple[str, float]] = field(default_factory=list)
+    events: list[dict[str, Any]] = field(default_factory=list)
 
 
 class PortfolioLedger:

@@ -194,10 +194,6 @@ def run_backtest_from_frames(
     out_dir = output_dir or (cfg.storage.output_dir / run_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if cfg.strategy.name == "ema_breakout_v1":
-        from tfalgo.strategy.ema_breakout_strategy import run_ema_breakout_backtest
-        return run_ema_breakout_backtest(cfg, frames_5m, bench_5m, cal, output_dir)
-
     data = prepared or prepare_market_data(cfg, frames_5m, bench_5m, cal)
     strategy = STRATEGIES.get(cfg.strategy.name)()
     stop_rule = STOP_RULES.get(cfg.strategy.stop)()
@@ -313,6 +309,7 @@ def run_backtest_from_frames(
                                 total_sell_notional=(fill.qty * fill.price) if pos_side == "SHORT" else 0.0,
                                 fees=fill.fees, slippage_cost=fill.slippage_cost,
                                 stop_trail=[(ts.isoformat(), stop_res["stop_price"])],
+                                events=[{"ts": ts.isoformat(), "price": round(fill.price, 2), "label": f"E1 ({fill.qty} qty)", "kind": "entry"}],
                             )
                             states[sym] = SymbolState(
                                 symbol=sym, lifecycle=LifecycleState.OPEN_MIS, position=pos,
@@ -354,6 +351,12 @@ def run_backtest_from_frames(
                     meta.slippage_cost += fill.slippage_cost
                     if float(bar["open"]) < pos.current_stop:
                         meta.gap_loss_flag = True
+                    meta.events.append({
+                        "ts": ts.isoformat(),
+                        "price": round(fill.price, 2),
+                        "label": f"Stop (-{fill.qty})",
+                        "kind": "exit",
+                    })
                     ledger.close_trade(meta, ts, "stop_hit", max(1, pos.days_held + 1))
                     states[sym] = SymbolState(
                         symbol=sym, lifecycle=LifecycleState.COOLDOWN,
@@ -383,6 +386,12 @@ def run_backtest_from_frames(
                         meta.total_buy_notional += fill.qty * fill.price
                     meta.fees += fill.fees
                     meta.slippage_cost += fill.slippage_cost
+                    meta.events.append({
+                        "ts": ts.isoformat(),
+                        "price": round(fill.price, 2),
+                        "label": f"MIS Exit (-{fill.qty})",
+                        "kind": "exit",
+                    })
                     ledger.close_trade(meta, ts, "mis_squareoff", 1)
                     states[sym] = SymbolState(symbol=sym, lifecycle=LifecycleState.IDLE, entries_today=st.entries_today)
                 continue

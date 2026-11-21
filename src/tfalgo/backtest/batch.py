@@ -220,6 +220,7 @@ def run_batch_from_frames(
                     "pattern": str(r.get("pattern") or "none"),
                     "pattern_quality": float(r.get("pattern_quality") or 0.0),
                     "stop_trail": str(r.get("stop_trail") or ""),
+                    "events": str(r.get("events") or ""),
                     "day_emas": day_emas,
                     "candles": candles,
                 })
@@ -291,6 +292,19 @@ def run_batch_from_frames(
                 last_c = b_map[d_str]
             bench_closes.append(last_c)
     bench_payload = {"dates": common_dates, "closes": bench_closes}
+    stock_bench: dict[str, list[float]] = {}
+    if common_dates:
+        for sym_b, d1_b in data.daily_map.items():
+            if d1_b.is_empty():
+                continue
+            s_map = {r["date"].isoformat(): float(r["close"]) for r in d1_b.iter_rows(named=True)}
+            last_sc = next(iter(s_map.values()), 0.0)
+            closes = []
+            for d_str in common_dates:
+                if d_str in s_map:
+                    last_sc = s_map[d_str]
+                closes.append(last_sc)
+            stock_bench[sym_b] = closes
     hist_dir = output_dir / "history"
     hist_dir.mkdir(parents=True, exist_ok=True)
     run_tag = session_name or (datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + "_".join(lbl for lbl, _ in configs)[:40])
