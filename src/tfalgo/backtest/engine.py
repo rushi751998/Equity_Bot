@@ -190,6 +190,9 @@ def run_backtest_from_frames(
     if cfg.strategy.name == "ema_breakout_v1":
         from tfalgo.strategy.ema_breakout_strategy import run_ema_breakout_backtest
         return run_ema_breakout_backtest(cfg, frames_5m, bench_5m, cal, output_dir, progress_cb=progress_cb)
+    if cfg.strategy.name == "dynamic_v1":
+        from tfalgo.strategy.dynamic_strategy import run_dynamic_backtest
+        return run_dynamic_backtest(cfg, frames_5m, bench_5m, cal, output_dir, progress_cb=progress_cb)
     run_id = f"run_{cfg.snapshot_hash()}_{cfg.run.seed}"
     out_dir = output_dir or (cfg.storage.output_dir / run_id)
     out_dir.mkdir(parents=True, exist_ok=True)

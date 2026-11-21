@@ -262,7 +262,23 @@ def create_app(default_config: Path = Path("config/pilot.yaml")) -> Flask:
         if p.exists():
             p.unlink()
         return jsonify({"ok": True})
-    
+
+    @app.post("/api/config/rename")
+    def rename_config() -> Response:
+        body = request.get_json(silent=True) or {}
+        old_p = Path("config") / Path(body.get("old_name", "")).name
+        new_p = Path("config") / Path(body.get("new_name", "")).name
+        if old_p.exists() and not new_p.exists():
+            old_p.rename(new_p)
+        return jsonify({"ok": True})
+
+    @app.post("/api/config/delete")
+    def delete_config() -> Response:
+        body = request.get_json(silent=True) or {}
+        p = Path("config") / Path(body.get("filename", "")).name
+        if p.exists():
+            p.unlink()
+        return jsonify({"ok": True})
     
     
     

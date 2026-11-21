@@ -133,6 +133,16 @@ def launch_ui(
     typer.echo(f"Open http://{host}:{port} in your browser")
     flask_app.run(host=host, port=port, debug=False)
 
+
+@app.command("server")
+def start_server(
+    config: Path = ConfigOpt,
+    host: str = typer.Option("127.0.0.1", help="Host"),
+    port: int = typer.Option(5000, help="Port"),
+) -> None:
+    """Start the tfalgo Quant Workstation server."""
+    launch_ui(config=config, host=host, port=port)
+
 if __name__ == "__main__":
     logging.basicConfig()
     app()

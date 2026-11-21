@@ -53,9 +53,45 @@ let LOG_HIDDEN = false;
 let runnerTimer = null;
 let runnerStartMs = 0;
 
+const MACRO_PATTERNS = [
+  ["ema_breakout", "EMA Breakout"],
+  ["cup_handle", "Cup & Handle"],
+  ["inv_head_shoulders", "Inv H&S"],
+  ["head_shoulders", "Head & Shoulders"],
+  ["double_bottom", "Double Bottom"],
+  ["double_top", "Double Top"],
+  ["triple_bottom", "Triple Bottom"],
+  ["triple_top", "Triple Top"],
+  ["vcp", "VCP"],
+  ["flat_base", "Flat Base"],
+];
+const CANDLE_TRIGGERS = [
+  ["doji", "Doji"],
+  ["hammer", "Hammer"],
+  ["shooting_star", "Shooting Star"],
+  ["engulfing", "Engulfing"],
+  ["flag_wedge", "Flag / Wedge"],
+  ["impulse_2x", "2x Impulse"],
+];
+
 const DEFAULT_SCENARIO_FORM = {
-  fileName: "ema_breakout_custom.yaml",
-  strategyName: "ema_breakout_v1",
+  fileName: "dynamic_edge_v1.yaml",
+  strategyName: "dynamic_v1",
+  direction: "LONG",
+  patternTf: "1h",
+  triggerTf: "5m",
+  patterns: ["ema_breakout", "cup_handle", "double_bottom", "vcp"],
+  candleTriggers: ["hammer", "engulfing", "impulse_2x", "flag_wedge"],
+  useRsi: true,
+  rsiMin: 50,
+  rsiMax: 80,
+  useRs: true,
+  minPassScore: 70,
+  qtyMinMult: 0.5,
+  qtyMaxMult: 1.5,
+  maxWaitBars: 36,
+  retraceMin: 15,
+  retraceMax: 65,
   timeframe: "1h",
   emaPeriods: "9, 21, 50",
   consolidationDays: 5,
@@ -496,8 +532,10 @@ function renderRunnerUI() {
               `}
             </div>
             <div class="sc-actions">
-              <button type="button" class="rn-btn primary" onclick="runSingleScenario('${cfgPath}')">Run Scenario</button>
-              <button type="button" class="rn-btn" onclick="loadScenarioIntoForm('${cfgPath}')">Load into Editor</button>
+              <button type="button" class="rn-btn primary" onclick="runSingleScenario('${cfgPath}')">Run</button>
+              <button type="button" class="rn-btn" onclick="loadScenarioIntoForm('${cfgPath}')">Edit</button>
+              <button type="button" class="rn-btn" onclick="renameScenario('${cfgPath}')">Rename</button>
+              <button type="button" class="rn-btn danger" onclick="deleteScenario('${cfgPath}')">Delete</button>
             </div>
           </div>`;
       }).join("")
@@ -587,7 +625,66 @@ function renderRunnerUI() {
 
         <div class="rn-form">
           <div class="rn-field"><label>Config Filename (.yaml)</label><input id="sc_fileName" value="${f.fileName}"></div>
-          <div class="rn-field"><label>Setup Timeframe</label>
+          <div class="rn-field"><label>Engine / Direction</label>
+            <div style="display:flex;gap:6px;">
+              <select id="sc_strategyName" style="width:55%;">
+                <option value="dynamic_v1" ${f.strategyName === "dynamic_v1" ? "selected" : ""}>dynamic_v1 (Edge Studio)</option>
+                <option value="ema_breakout_v1" ${f.strategyName === "ema_breakout_v1" ? "selected" : ""}>ema_breakout_v1</option>
+              </select>
+              <select id="sc_direction" style="width:45%;">
+                <option value="LONG" ${f.direction === "LONG" ? "selected" : ""}>LONG</option>
+                <option value="SHORT" ${f.direction === "SHORT" ? "selected" : ""}>SHORT</option>
+                <option value="BOTH" ${f.direction === "BOTH" ? "selected" : ""}>BOTH</option>
+              </select>
+            </div>
+          </div>
+          <div class="rn-field"><label>Pattern TF / Trigger TF</label>
+            <div style="display:flex;gap:6px;">
+              <select id="sc_patternTf" style="width:50%;">
+                ${["5m","15m","1h","1d"].map(tf => `<option value="${tf}" ${(f.patternTf||f.timeframe)===tf?"selected":""}>Pat: ${tf}</option>`).join("")}
+              </select>
+              <select id="sc_triggerTf" style="width:50%;">
+                ${["5m","15m","1h","1d"].map(tf => `<option value="${tf}" ${(f.triggerTf||"5m")===tf?"selected":""}>Trig: ${tf}</option>`).join("")}
+              </select>
+            </div>
+          </div>
+          <div class="rn-field"><label>RSI Min / Max &amp; RS Filter</label>
+            <div style="display:flex;gap:5px;align-items:center;">
+              <input type="checkbox" id="sc_useRsi" ${f.useRsi !== false ? "checked" : ""} title="Enable RSI">
+              <input type="number" id="sc_rsiMin" value="${f.rsiMin ?? 50}" style="width:52px;">
+              <input type="number" id="sc_rsiMax" value="${f.rsiMax ?? 80}" style="width:52px;">
+              <label style="font-size:11px;display:flex;align-items:center;gap:3px;"><input type="checkbox" id="sc_useRs" ${f.useRs !== false ? "checked" : ""}> RS</label>
+            </div>
+          </div>
+          <div class="rn-field"><label>Pass Score % / Wait Bars</label>
+            <div style="display:flex;gap:6px;">
+              <input type="number" id="sc_minPassScore" value="${f.minPassScore ?? 70}" style="width:50%;" title="Min Pass Score %">
+              <input type="number" id="sc_maxWaitBars" value="${f.maxWaitBars ?? 36}" style="width:50%;" title="Max Wait Bars">
+            </div>
+          </div>
+          <div class="rn-field"><label>Retrace % (Min / Max)</label>
+            <div style="display:flex;gap:6px;">
+              <input type="number" id="sc_retraceMin" value="${f.retraceMin ?? 15}" style="width:50%;">
+              <input type="number" id="sc_retraceMax" value="${f.retraceMax ?? 65}" style="width:50%;">
+            </div>
+          </div>
+          <div class="rn-field"><label>Score Qty Mult (Min / Max)</label>
+            <div style="display:flex;gap:6px;">
+              <input type="number" step="0.1" id="sc_qtyMinMult" value="${f.qtyMinMult ?? 0.5}" style="width:50%;">
+              <input type="number" step="0.1" id="sc_qtyMaxMult" value="${f.qtyMaxMult ?? 1.5}" style="width:50%;">
+            </div>
+          </div>
+          <div class="rn-field" style="grid-column: 1 / -1;"><label>Macro Chart Patterns</label>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;padding:6px 8px;border:1px solid #cbd5e1;border-radius:7px;">
+              ${MACRO_PATTERNS.map(([k, lbl]) => `<label style="font-size:12px;display:flex;align-items:center;gap:4px;"><input type="checkbox" class="sc-pat-cb" value="${k}" ${(f.patterns||[]).includes(k)?"checked":""}> ${lbl}</label>`).join("")}
+            </div>
+          </div>
+          <div class="rn-field" style="grid-column: 1 / -1;"><label>Candlestick / Bar Triggers</label>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;padding:6px 8px;border:1px solid #cbd5e1;border-radius:7px;">
+              ${CANDLE_TRIGGERS.map(([k, lbl]) => `<label style="font-size:12px;display:flex;align-items:center;gap:4px;"><input type="checkbox" class="sc-trig-cb" value="${k}" ${(f.candleTriggers||[]).includes(k)?"checked":""}> ${lbl}</label>`).join("")}
+            </div>
+          </div>
+          <div class="rn-field" style="display:none;"><label>Setup Timeframe</label>
             <select id="sc_timeframe">
               <option value="1h" ${f.timeframe === "1h" ? "selected" : ""}>1h (Hourly)</option>
               <option value="1d" ${f.timeframe === "1d" ? "selected" : ""}>1d (Daily)</option>
@@ -673,6 +770,44 @@ function applyPreset(name) {
   renderRunnerUI();
 }
 
+async function renameScenario(cfgPath) {
+  const oldName = cfgPath.split("/").pop();
+  const raw = (prompt(`Rename "${oldName}" to:`, oldName) || "").trim();
+  if (!raw || raw === oldName) return;
+  let newName = raw.replace(/[^a-zA-Z0-9._-]/g, "_");
+  if (!newName.endsWith(".yaml")) newName += ".yaml";
+  const newPath = "config/" + newName;
+  try {
+    await fetch("/api/config/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ old_name: oldName, new_name: newName }),
+    });
+  } catch {}
+  AVAILABLE_CONFIGS = AVAILABLE_CONFIGS.map(c => (c === cfgPath ? newPath : c));
+  if (SELECTED_CONFIGS.has(cfgPath)) { SELECTED_CONFIGS.delete(cfgPath); SELECTED_CONFIGS.add(newPath); }
+  if (SAVED_SCENARIOS[cfgPath]) { SAVED_SCENARIOS[newPath] = { ...SAVED_SCENARIOS[cfgPath], fileName: newName }; delete SAVED_SCENARIOS[cfgPath]; }
+  savePersistedState();
+  renderRunnerUI();
+}
+
+async function deleteScenario(cfgPath) {
+  const name = cfgPath.split("/").pop();
+  if (!confirm(`Delete scenario "${name}"?`)) return;
+  try {
+    await fetch("/api/config/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: name }),
+    });
+  } catch {}
+  AVAILABLE_CONFIGS = AVAILABLE_CONFIGS.filter(c => c !== cfgPath);
+  SELECTED_CONFIGS.delete(cfgPath);
+  delete SAVED_SCENARIOS[cfgPath];
+  savePersistedState();
+  renderRunnerUI();
+}
+
 function loadScenarioIntoForm(cfgPath) {
   const meta = getScenarioMeta(cfgPath);
   const name = cfgPath.split("/").pop();
@@ -684,10 +819,28 @@ function loadScenarioIntoForm(cfgPath) {
 
 function readFormValues() {
   const g = id => (document.getElementById(id) ? document.getElementById(id).value : "");
+  const chk = id => !!(document.getElementById(id) && document.getElementById(id).checked);
+  const pats = [...document.querySelectorAll(".sc-pat-cb:checked")].map(x => x.value);
+  const trigs = [...document.querySelectorAll(".sc-trig-cb:checked")].map(x => x.value);
   return {
-    fileName: (g("sc_fileName").trim() || "ema_breakout_custom.yaml").replace(/[^a-zA-Z0-9._-]/g, "_"),
-    strategyName: "ema_breakout_v1",
-    timeframe: g("sc_timeframe") || "1h",
+    fileName: (g("sc_fileName").trim() || "dynamic_edge_v1.yaml").replace(/[^a-zA-Z0-9._-]/g, "_"),
+    strategyName: g("sc_strategyName") || "dynamic_v1",
+    direction: g("sc_direction") || "LONG",
+    patternTf: g("sc_patternTf") || "1h",
+    triggerTf: g("sc_triggerTf") || "5m",
+    patterns: pats,
+    candleTriggers: trigs,
+    useRsi: chk("sc_useRsi"),
+    rsiMin: Number(g("sc_rsiMin")) || 50,
+    rsiMax: Number(g("sc_rsiMax")) || 80,
+    useRs: chk("sc_useRs"),
+    minPassScore: Number(g("sc_minPassScore")) || 70,
+    maxWaitBars: Number(g("sc_maxWaitBars")) || 36,
+    retraceMin: Number(g("sc_retraceMin")) || 15,
+    retraceMax: Number(g("sc_retraceMax")) || 65,
+    qtyMinMult: Number(g("sc_qtyMinMult")) || 0.5,
+    qtyMaxMult: Number(g("sc_qtyMaxMult")) || 1.5,
+    timeframe: g("sc_patternTf") || "1h",
     emaPeriods: g("sc_emaPeriods") || "9, 21, 50",
     consolidationDays: Number(g("sc_consolidationDays")) || 5,
     maxRangePct: Number(g("sc_maxRangePct")) || 8.0,
@@ -711,6 +864,49 @@ function buildYamlFromForm(f) {
   const emas = f.emaPeriods.split(",").map(x => Number(x.trim())).filter(Boolean);
   const tr = f.tranches.split(",").map(x => Number(x.trim())).filter(x => !Number.isNaN(x));
   const ar = f.addAtR.split(",").map(x => Number(x.trim())).filter(x => !Number.isNaN(x));
+  if (f.strategyName === "dynamic_v1") {
+    const pList = (f.patterns || []).map(x => `"${x}"`).join(", ");
+    const tList = (f.candleTriggers || []).map(x => `"${x}"`).join(", ");
+    return `extends: default.yaml
+
+strategy:
+  name: dynamic_v1
+  params:
+    direction: "${f.direction || "LONG"}"
+    pattern_tf: "${f.patternTf || "1h"}"
+    trigger_tf: "${f.triggerTf || "5m"}"
+    trail_tf: "${f.trailTimeframe || "1h"}"
+    patterns: [${pList}]
+    candle_triggers: [${tList}]
+    ema_periods: [${emas.join(", ")}]
+    consolidation_min_days: ${f.consolidationDays}
+    consolidation_max_range_pct: ${f.maxRangePct}
+    breakout_vol_mult: ${f.volMult}
+    use_rsi: ${f.useRsi !== false}
+    rsi_period: 14
+    rsi_min: ${f.rsiMin ?? 50}
+    rsi_max: ${f.rsiMax ?? 80}
+    use_rs: ${f.useRs !== false}
+    rs_lookback_bars: 20
+    min_pass_score_pct: ${f.minPassScore ?? 70}
+    score_qty_min_mult: ${f.qtyMinMult ?? 0.5}
+    score_qty_max_mult: ${f.qtyMaxMult ?? 1.5}
+    max_wait_bars: ${f.maxWaitBars ?? 36}
+    retrace_min_pct: ${f.retraceMin ?? 15}
+    retrace_max_pct: ${f.retraceMax ?? 65}
+    impulse_pct_mult: ${f.impulseMult}
+    sl_source: "${f.slSource === "5m_low" ? "trigger_low" : "pattern_low"}"
+    holding_mode: "${f.holdingMode}"
+    risk_per_trade_pct: ${f.riskPct}
+    tranches: [${tr.join(", ")}]
+    add_at_r: [${ar.join(", ")}]
+    use_risk_neutral_sl: true
+    trail_ema_initial: ${f.trailEmaInitial}
+    trail_ema_runner: ${f.trailEmaRunner}
+    runner_atr_period: 14
+    runner_atr_mult: ${f.runnerAtrMult}
+`;
+  }
   return `extends: default.yaml
 
 strategy:
