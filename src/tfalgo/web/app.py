@@ -280,7 +280,59 @@ def create_app(default_config: Path = Path("config/pilot.yaml")) -> Flask:
             p.unlink()
         return jsonify({"ok": True})
     
-    
+    @app.post("/api/data/upload")
+    def upload_data() -> Response:
+        import pandas as pd
+        import polars as pl
+
+        cfg = load_config(default_config)
+        store = build_store(cfg)
+        files = request.files.getlist("files")
+        if not files:
+            return jsonify({"ok": False, "error": "No files uploaded"}), 400
+
+        sym_override = (request.form.get("symbol") or "").strip().upper()
+        tf = request.form.get("timeframe") or "5m"
+        is_idx = request.form.get("is_index") == "1"
+        results = []
+        total_rows = 0
+
+        for f in files:
+            fname = f.filename or "data.csv"
+            ext = Path(fname).suffix.lower()
+            sym = sym_override if (sym_override and len(files) == 1) else Path(fname).stem.upper()
+            if is_idx and not sym.startswith("IDX:"):
+                sym = f"idx:{sym}"
+            elif is_idx:
+                sym = f"idx:{sym[4:]}"
+
+            if ext == ".csv":
+                pdf = pd.read_csv(f)
+            elif ext in (".xlsx", ".xls"):
+                pdf = pd.read_excel(f)
+            elif ext == ".parquet":
+                pdf = pd.read_parquet(f)
+            else:
+                results.append({"symbol": sym, "rows": 0, "status": f"unsupported {ext}"})
+                continue
+
+            pdf.columns = [str(c).strip().lower() for c in pdf.columns]
+            if "date" in pdf.columns and "ts" not in pdf.columns:
+                pdf = pdf.rename(columns={"date": "ts"})
+            pdf["ts"] = pd.to_datetime(pdf["ts"])
+            if pdf["ts"].dt.tz is None:
+                pdf["ts"] = pdf["ts"].dt.tz_localize(cfg.run.timezone)
+            else:
+                pdf["ts"] = pdf["ts"].dt.tz_convert(cfg.run.timezone)
+
+            keep = [c for c in ["ts", "open", "high", "low", "close", "volume"] if c in pdf.columns]
+            pl_df = pl.from_pandas(pdf[keep])
+            n_rows = store.upsert_bars(sym, tf, pl_df) if hasattr(store, "upsert_bars") else store.write_bars(sym, tf, pl_df)
+            cnt = int(n_rows) if isinstance(n_rows, (int, float)) else len(pdf)
+            total_rows += cnt
+            results.append({"symbol": sym, "rows": cnt, "status": "stored"})
+
+        return jsonify({"ok": True, "total_rows": total_rows, "results": results})
     
     
     

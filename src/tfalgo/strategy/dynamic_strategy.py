@@ -68,6 +68,7 @@ DEFAULT_DYNAMIC_PARAMS: dict[str, Any] = {
     "trail_ema_runner": 9,
     "runner_atr_period": 14,
     "runner_atr_mult": 0.5,
+    "slippage_bps": 0.0,
 }
 
 
@@ -270,6 +271,7 @@ class _DynPos:
     realized_pnl: float = 0.0
     events: list[dict[str, Any]] = field(default_factory=list)
     stop_trail: list[tuple[str, float]] = field(default_factory=list)
+    exit_fills: list[tuple[float, float]] = field(default_factory=list)
 
 
 def backtest_dynamic_symbol(
@@ -311,6 +313,7 @@ def backtest_dynamic_symbol(
     tranches = p["tranches"]
     add_r1, add_r2 = p["add_at_r"]
     atr_mult = float(p["runner_atr_mult"])
+    slip_bps = float(p.get("slippage_bps", 5.0))
 
     unique_days = df_5m.index.normalize().unique()
     total_days = max(1, len(unique_days))
@@ -339,9 +342,10 @@ def backtest_dynamic_symbol(
             if hit_sl:
                 px = pos.sl_price
                 avg_e = sum(pr * q for pr, q in zip(pos.entry_prices, pos.qty_by_tranche)) / max(sum(pos.qty_by_tranche), 1e-6)
+                pos.exit_fills.append((pos.remaining_qty, px))
                 pos.realized_pnl += pos.remaining_qty * ((px - avg_e) if is_long else (avg_e - px))
                 pos.events.append({"ts": ts.isoformat(), "price": round(px, 2), "label": f"Stop (-{int(round(pos.remaining_qty))})", "kind": "exit"})
-                trades.append(_dyn_trade_dict(pos, ts, px, "stop_hit", base_risk_inr))
+                trades.append(_dyn_trade_dict(pos, ts, px, "stop_hit", base_risk_inr, slip_bps, p["holding_mode"]))
                 pos = None
                 continue
 
@@ -378,6 +382,7 @@ def backtest_dynamic_symbol(
 
             if not pos.sold_3r and (float(bar["high"]) >= p3r if is_long else float(bar["low"]) <= p3r):
                 sq = min(pos.remaining_qty, tot_q / 3.0)
+                pos.exit_fills.append((sq, p3r))
                 pos.realized_pnl += sq * ((p3r - avg_e) if is_long else (avg_e - p3r))
                 pos.remaining_qty -= sq
                 pos.sold_3r = True
@@ -385,6 +390,7 @@ def backtest_dynamic_symbol(
 
             if not pos.sold_6r and pos.remaining_qty > 0 and (float(bar["high"]) >= p6r if is_long else float(bar["low"]) <= p6r):
                 sq = min(pos.remaining_qty, tot_q / 3.0)
+                pos.exit_fills.append((sq, p6r))
                 pos.realized_pnl += sq * ((p6r - avg_e) if is_long else (avg_e - p6r))
                 pos.remaining_qty -= sq
                 pos.sold_6r = True
@@ -405,9 +411,10 @@ def backtest_dynamic_symbol(
 
             if p["holding_mode"] == "mis" and ts.strftime("%H:%M") >= "15:15":
                 px = float(bar["close"])
+                pos.exit_fills.append((pos.remaining_qty, px))
                 pos.realized_pnl += pos.remaining_qty * ((px - avg_e) if is_long else (avg_e - px))
                 pos.events.append({"ts": ts.isoformat(), "price": round(px, 2), "label": f"MIS Exit (-{int(round(pos.remaining_qty))})", "kind": "exit"})
-                trades.append(_dyn_trade_dict(pos, ts, px, "mis_squareoff", base_risk_inr))
+                trades.append(_dyn_trade_dict(pos, ts, px, "mis_squareoff", base_risk_inr, slip_bps, p["holding_mode"]))
                 pos = None
             continue
 
@@ -496,27 +503,51 @@ def backtest_dynamic_symbol(
         px = float(df_5m.iloc[-1]["close"])
         is_long = pos.side == "LONG"
         avg_e = sum(pr * q for pr, q in zip(pos.entry_prices, pos.qty_by_tranche)) / max(sum(pos.qty_by_tranche), 1e-6)
+        pos.exit_fills.append((pos.remaining_qty, px))
         pos.realized_pnl += pos.remaining_qty * ((px - avg_e) if is_long else (avg_e - px))
         pos.events.append({"ts": df_5m.index[-1].isoformat(), "price": round(px, 2), "label": f"EOD (-{int(round(pos.remaining_qty))})", "kind": "exit"})
-        trades.append(_dyn_trade_dict(pos, df_5m.index[-1], px, "eod_close", base_risk_inr))
+        trades.append(_dyn_trade_dict(pos, df_5m.index[-1], px, "eod_close", base_risk_inr, slip_bps, p["holding_mode"]))
 
     return trades
 
 
-def _dyn_trade_dict(pos: _DynPos, exit_ts: pd.Timestamp, exit_px: float, reason: str, risk_inr: float) -> dict[str, Any]:
+
+def _calc_charges(buy_notional: float, sell_notional: float, holding_mode: str, slip_bps: float) -> float:
+    turnover = buy_notional + sell_notional
+    if holding_mode == "mis":
+        brok = min(20.0, 0.0003 * buy_notional) + min(20.0, 0.0003 * sell_notional)
+        stt = 0.00025 * sell_notional
+        stamp = 0.00003 * buy_notional
+    else:
+        brok = 0.0
+        stt = 0.001 * turnover
+        stamp = 0.00015 * buy_notional
+    exch_sebi = 0.0000335 * turnover
+    gst = 0.18 * (brok + exch_sebi)
+    return round(brok + stt + stamp + exch_sebi + gst, 2)
+
+def _dyn_trade_dict(pos: _DynPos, exit_ts: pd.Timestamp, exit_px: float, reason: str, risk_inr: float, slip_bps: float = 0.0, holding_mode: str = "swing") -> dict[str, Any]:
     tot_q = sum(pos.qty_by_tranche)
     avg_e = sum(pr * q for pr, q in zip(pos.entry_prices, pos.qty_by_tranche)) / max(tot_q, 1e-6)
+    tot_ex_q = sum(q for q, _ in pos.exit_fills)
+    avg_x = (sum(q * px for q, px in pos.exit_fills) / tot_ex_q) if tot_ex_q > 0 else exit_px
+    gross_pnl = ((avg_x - avg_e) if pos.side == "LONG" else (avg_e - avg_x)) * tot_q
+    buy_n, sell_n = tot_q * avg_e, tot_q * avg_x
+    charges = _calc_charges(buy_n, sell_n, holding_mode, slip_bps)
+    slip_cost = (buy_n + sell_n) * (slip_bps / 10000.0) if slip_bps > 0 else 0.0
+    net_pnl = gross_pnl - charges - slip_cost
     return {
         "trade_id": pos.trade_id,
         "symbol": pos.symbol,
         "entry_ts": pos.entry_ts.to_pydatetime(),
         "exit_ts": exit_ts.to_pydatetime(),
         "avg_entry": round(avg_e, 2),
-        "avg_exit": round(exit_px, 2),
+        "avg_exit": round(avg_x, 2),
+        "charges": charges,
         "initial_stop": round(pos.initial_sl, 2),
         "qty_peak": int(round(tot_q)),
-        "net_pnl": round(pos.realized_pnl, 2),
-        "money_r": round(pos.realized_pnl / risk_inr, 2) if risk_inr > 0 else 0.0,
+        "net_pnl": round(net_pnl, 2),
+        "money_r": round(net_pnl / risk_inr, 2) if risk_inr > 0 else 0.0,
         "exit_reason": reason,
         "pattern": pos.pattern,
         "regime_at_entry": pos.side.lower(),

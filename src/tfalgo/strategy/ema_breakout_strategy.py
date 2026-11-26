@@ -50,6 +50,7 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "trail_ema_runner": 9,
     "runner_atr_period": 14,
     "runner_atr_mult": 0.5,
+    "slippage_bps": 0.0,
 }
 
 
@@ -183,7 +184,23 @@ class _Pos:
     realized_pnl: float = 0.0
     events: list[dict[str, Any]] = field(default_factory=list)
     stop_trail: list[tuple[str, float]] = field(default_factory=list)
+    exit_fills: list[tuple[float, float]] = field(default_factory=list)
 
+
+
+def _calc_charges(buy_notional: float, sell_notional: float, holding_mode: str, slip_bps: float) -> float:
+    turnover = buy_notional + sell_notional
+    if holding_mode == "mis":
+        brok = min(20.0, 0.0003 * buy_notional) + min(20.0, 0.0003 * sell_notional)
+        stt = 0.00025 * sell_notional
+        stamp = 0.00003 * buy_notional
+    else:
+        brok = 0.0
+        stt = 0.001 * turnover
+        stamp = 0.00015 * buy_notional
+    exch_sebi = 0.0000335 * turnover
+    gst = 0.18 * (brok + exch_sebi)
+    return round(brok + stt + stamp + exch_sebi + gst, 2)
 
 def _avg_entry(pos: _Pos) -> float:
     tot_q = sum(pos.qty_by_tranche)
@@ -218,6 +235,7 @@ def backtest_symbol(
     add_r1, add_r2 = p["add_at_r"]
     risk_inr = capital * (float(p["risk_per_trade_pct"]) / 100.0)
     atr_mult = float(p["runner_atr_mult"])
+    slip_bps = float(p.get("slippage_bps", 5.0))
     holding_mode = p["holding_mode"]
 
     unique_days = df_5m.index.normalize().unique()
@@ -250,8 +268,9 @@ def backtest_symbol(
             if float(bar["low"]) <= pos.sl_price:
                 exit_px = pos.sl_price
                 pos.events.append({"ts": ts.isoformat(), "price": round(exit_px, 2), "label": f"Stop (-{int(round(pos.remaining_qty))})", "kind": "exit"})
+                pos.exit_fills.append((pos.remaining_qty, exit_px))
                 pos.realized_pnl += pos.remaining_qty * (exit_px - _avg_entry(pos))
-                trades.append(_trade_dict(pos, ts, exit_px, "stop_hit", risk_inr))
+                trades.append(_trade_dict(pos, ts, exit_px, "stop_hit", risk_inr, slip_bps, holding_mode))
                 pos = None
                 continue
 
@@ -291,6 +310,7 @@ def backtest_symbol(
 
             if not pos.sold_3r and float(bar["high"]) >= p3r:
                 sell_q = min(pos.remaining_qty, tot_filled / 3.0)
+                pos.exit_fills.append((sell_q, p3r))
                 pos.realized_pnl += sell_q * (p3r - avg_e)
                 pos.remaining_qty -= sell_q
                 pos.sold_3r = True
@@ -298,6 +318,7 @@ def backtest_symbol(
 
             if not pos.sold_6r and float(bar["high"]) >= p6r and pos.remaining_qty > 0:
                 sell_q = min(pos.remaining_qty, tot_filled / 3.0)
+                pos.exit_fills.append((sell_q, p6r))
                 pos.realized_pnl += sell_q * (p6r - avg_e)
                 pos.remaining_qty -= sell_q
                 pos.sold_6r = True
@@ -319,8 +340,9 @@ def backtest_symbol(
             if holding_mode == "mis" and ts.strftime("%H:%M") >= "15:15":
                 exit_px = float(bar["close"])
                 pos.events.append({"ts": ts.isoformat(), "price": round(exit_px, 2), "label": f"MIS Exit (-{int(round(pos.remaining_qty))})", "kind": "exit"})
+                pos.exit_fills.append((pos.remaining_qty, exit_px))
                 pos.realized_pnl += pos.remaining_qty * (exit_px - avg_e)
-                trades.append(_trade_dict(pos, ts, exit_px, "mis_squareoff", risk_inr))
+                trades.append(_trade_dict(pos, ts, exit_px, "mis_squareoff", risk_inr, slip_bps, holding_mode))
                 pos = None
             continue
 
@@ -350,25 +372,36 @@ def backtest_symbol(
     if pos is not None and pos.remaining_qty > 0:
         exit_px = float(df_5m.iloc[-1]["close"])
         pos.events.append({"ts": df_5m.index[-1].isoformat(), "price": round(exit_px, 2), "label": f"EOD Exit (-{int(round(pos.remaining_qty))})", "kind": "exit"})
+        pos.exit_fills.append((pos.remaining_qty, exit_px))
         pos.realized_pnl += pos.remaining_qty * (exit_px - _avg_entry(pos))
-        trades.append(_trade_dict(pos, df_5m.index[-1], exit_px, "eod_close", risk_inr))
+        trades.append(_trade_dict(pos, df_5m.index[-1], exit_px, "eod_close", risk_inr, slip_bps, holding_mode))
 
     return trades
 
 
-def _trade_dict(pos: _Pos, exit_ts: pd.Timestamp, exit_px: float, reason: str, risk_inr: float) -> dict[str, Any]:
+def _trade_dict(pos: _Pos, exit_ts: pd.Timestamp, exit_px: float, reason: str, risk_inr: float, slip_bps: float = 0.0, holding_mode: str = "swing") -> dict[str, Any]:
+    tot_q = sum(pos.qty_by_tranche)
+    avg_e = _avg_entry(pos)
+    tot_ex_q = sum(q for q, _ in pos.exit_fills)
+    avg_x = (sum(q * px for q, px in pos.exit_fills) / tot_ex_q) if tot_ex_q > 0 else exit_px
+    gross_pnl = (avg_x - avg_e) * tot_q
+    buy_n, sell_n = tot_q * avg_e, tot_q * avg_x
+    charges = _calc_charges(buy_n, sell_n, holding_mode, slip_bps)
+    slip_cost = (buy_n + sell_n) * (slip_bps / 10000.0) if slip_bps > 0 else 0.0
+    net_pnl = gross_pnl - charges - slip_cost
     return {
         "trade_id": pos.trade_id,
         "symbol": pos.symbol,
         "entry_ts": pos.entry_ts.to_pydatetime(),
         "exit_ts": exit_ts.to_pydatetime(),
-        "avg_entry": round(_avg_entry(pos), 2),
-        "avg_exit": round(exit_px, 2),
+        "avg_entry": round(avg_e, 2),
+        "avg_exit": round(avg_x, 2),
+        "charges": charges,
         "initial_stop": round(pos.initial_sl, 2),
         "tranches_filled": pos.tranches_filled,
         "qty_peak": int(round(sum(pos.qty_by_tranche))),
-        "net_pnl": round(pos.realized_pnl, 2),
-        "money_r": round(pos.realized_pnl / risk_inr, 2) if risk_inr > 0 else 0.0,
+        "net_pnl": round(net_pnl, 2),
+        "money_r": round(net_pnl / risk_inr, 2) if risk_inr > 0 else 0.0,
         "exit_reason": reason,
         "pattern": pos.pattern,
         "regime_at_entry": "trend",

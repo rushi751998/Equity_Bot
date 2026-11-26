@@ -9,6 +9,12 @@ let replayLimitIdx = null;
 let replaySpeed = 1.0;
 let state = [];
 let activeTrades = [];
+let filteredTrades = [];
+let simViewStart = 0;
+let simViewEnd = null;
+let capUsedUnit = "pct";
+let lastSimSeries = null;
+let SIM_SLIPPAGE_PCT = parseFloat(localStorage.getItem("tfalgo_sim_slip_pct") || "0.05") || 0;
 let sortCol = "entry_ts";
 let sortAsc = false;
 let currentTrade = null;
@@ -32,6 +38,8 @@ let viewEnd = 0;
 let anchorA = null;
 let anchorB = null;
 let lastMouse = null;
+let priceScaleMult = 1.0;
+let priceOffset = 0.0;
 
 // Unified Sessions, Tickers, Theme & Progress state
 const STORAGE_KEY_SCENARIOS = "tfalgo_saved_scenarios_v1";
@@ -108,6 +116,7 @@ const DEFAULT_SCENARIO_FORM = {
   trailEmaInitial: 21,
   trailEmaRunner: 9,
   runnerAtrMult: 0.5,
+  slippageBps: 5,
   notes: "1H E9/21/50 breakout after >=5d consolidation, 5m trigger, 1R/2R pyramid, 3R/6R + E9-ATR trail",
 };
 
@@ -174,7 +183,7 @@ function toggleDarkMode() {
 }
 
 function showTab(name, btn) {
-  ["sim", "runner", "live"].forEach(t => {
+  ["sim", "runner", "live", "data"].forEach(t => {
     const el = document.getElementById("tab_" + t);
     if (el) el.style.display = t === name ? "block" : "none";
   });
@@ -201,6 +210,8 @@ async function init() {
   loadPersistedState();
   injectRunnerStyles();
   setupHeaderSessionAndTheme();
+  setupDataUploadTab();
+  setupSimControls();
   applyTheme();
 
   try {
@@ -220,6 +231,282 @@ async function init() {
 
   await refreshRuns();
   renderRunnerUI();
+}
+
+function setupDataUploadTab() {
+  const liveTab = document.getElementById("tab_live");
+  const tabBar = document.querySelector(".tab") ? document.querySelector(".tab").parentElement : null;
+  if (tabBar && !document.getElementById("tfDataTabBtn")) {
+    const btn = document.createElement("button");
+    btn.id = "tfDataTabBtn";
+    btn.type = "button";
+    btn.className = "tab";
+    btn.textContent = "Data Upload";
+    btn.onclick = () => showTab("data", btn);
+    tabBar.appendChild(btn);
+  }
+  if (liveTab && !document.getElementById("tab_data")) {
+    const div = document.createElement("div");
+    div.id = "tab_data";
+    div.style.display = "none";
+    div.innerHTML = `
+      <div class="rn-card">
+        <div class="rn-head">
+          <div>
+            <h3 class="rn-title">Upload Market Data to DB (.csv, .xlsx, .parquet)</h3>
+            <div class="rn-sub">Upload OHLCV files (columns: date/ts, open, high, low, close, volume). Filename is used as symbol if left blank.</div>
+          </div>
+        </div>
+        <div class="rn-form">
+          <div class="rn-field" style="grid-column:span 2;">
+            <label>Select File(s) (.csv, .xlsx, .xls, .parquet)</label>
+            <input type="file" id="du_files" multiple accept=".csv,.xlsx,.xls,.parquet">
+          </div>
+          <div class="rn-field">
+            <label>Symbol Override (optional for single file)</label>
+            <input id="du_symbol" placeholder="e.g. RELIANCE">
+          </div>
+          <div class="rn-field">
+            <label>Timeframe</label>
+            <select id="du_tf">
+              <option value="5m" selected>5m</option>
+              <option value="15m">15m</option>
+              <option value="1h">1h</option>
+              <option value="1d">1d</option>
+            </select>
+          </div>
+          <div class="rn-field">
+            <label>Index Data?</label>
+            <label style="font-size:12.5px;display:flex;align-items:center;gap:6px;margin-top:6px;">
+              <input type="checkbox" id="du_isIndex"> Store as Index (idx:...)
+            </label>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:14px;">
+          <button type="button" class="rn-btn primary" onclick="uploadDataFiles()">Upload &amp; Store in DB</button>
+          <span id="du_status" class="rn-sub"></span>
+        </div>
+        <pre id="du_log" class="rn-log-box" style="display:none;margin-top:12px;"></pre>
+      </div>
+    `;
+    liveTab.insertAdjacentElement("afterend", div);
+  }
+}
+
+async function uploadDataFiles() {
+  const inp = document.getElementById("du_files");
+  const st = document.getElementById("du_status");
+  const log = document.getElementById("du_log");
+  if (!inp || !inp.files || !inp.files.length) {
+    if (st) st.textContent = "Please choose at least one .csv, .xlsx, or .parquet file.";
+    return;
+  }
+  const fd = new FormData();
+  for (const f of inp.files) fd.append("files", f);
+  fd.append("symbol", (document.getElementById("du_symbol")?.value || "").trim().toUpperCase());
+  fd.append("timeframe", document.getElementById("du_tf")?.value || "5m");
+  fd.append("is_index", document.getElementById("du_isIndex")?.checked ? "1" : "0");
+
+  if (st) st.textContent = `Uploading ${inp.files.length} file(s)...`;
+  try {
+    const res = await (await fetch("/api/data/upload", { method: "POST", body: fd })).json();
+    if (!res.ok) {
+      if (st) st.textContent = "Error: " + (res.error || "Upload failed");
+      return;
+    }
+    if (st) st.textContent = `Stored ${res.total_rows || 0} rows across ${(res.results || []).length} file(s).`;
+    if (log) {
+      log.style.display = "block";
+      log.textContent = (res.results || []).map(r => `${r.symbol}: +${r.rows} rows (${r.status})`).join("\n");
+    }
+    const symRes = await fetch("/api/symbols").then(r => r.json()).catch(() => ({ symbols: [] }));
+    AVAILABLE_SYMBOLS = (symRes.symbols || []).filter(s => !String(s).startsWith("idx:"));
+    AVAILABLE_SYMBOLS.forEach(s => SELECTED_SYMBOLS.add(s));
+    renderRunnerUI();
+  } catch (err) {
+    if (st) st.textContent = "Upload failed: " + err.message;
+  }
+}
+
+function setupSimControls() {
+  const capInput = document.getElementById("capInput");
+  if (capInput && !document.getElementById("simSlipInput")) {
+    const wrap = document.createElement("span");
+    wrap.style.cssText = "display:inline-flex;align-items:center;gap:6px;margin-left:12px;";
+    wrap.innerHTML = `<label style="font-size:13px;font-weight:600;">Slippage %/side:</label><input id="simSlipInput" type="number" step="0.01" min="0" value="${SIM_SLIPPAGE_PCT}" style="width:72px;padding:5px 7px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;">`;
+    capInput.insertAdjacentElement("afterend", wrap);
+    const slipEl = document.getElementById("simSlipInput");
+    slipEl.addEventListener("input", () => {
+      SIM_SLIPPAGE_PCT = Math.max(0, parseFloat(slipEl.value) || 0);
+      try { localStorage.setItem("tfalgo_sim_slip_pct", String(SIM_SLIPPAGE_PCT)); } catch {}
+      applyFilters();
+    });
+  }
+
+  const eqSvg = document.getElementById("eqSvg");
+  const eqCard = eqSvg ? eqSvg.closest(".card, .panel, .box, div") : null;
+  if (eqCard && !document.getElementById("simRangeBar")) {
+    const rb = document.createElement("div");
+    rb.id = "simRangeBar";
+    rb.className = "rn-card";
+    rb.style.cssText = "padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;";
+    rb.innerHTML = `
+      <b style="font-size:12.5px;">Time Window (All 3 Charts):</b>
+      <span id="simRangeLbl" class="rn-sub" style="min-width:170px;">Full Range</span>
+      <label style="font-size:11.5px;display:flex;align-items:center;gap:6px;flex:1;min-width:160px;">Start
+        <input id="simRangeStart" type="range" min="0" max="100" value="0" style="width:100%;" oninput="onSimSliderInput()">
+      </label>
+      <label style="font-size:11.5px;display:flex;align-items:center;gap:6px;flex:1;min-width:160px;">End
+        <input id="simRangeEnd" type="range" min="0" max="100" value="100" style="width:100%;" oninput="onSimSliderInput()">
+      </label>
+      <button type="button" class="rn-btn" onclick="resetSimRange()">Reset Window</button>
+    `;
+    eqCard.insertAdjacentElement("beforebegin", rb);
+  }
+
+  const ddSvg = document.getElementById("ddSvg");
+  const ddCard = ddSvg ? ddSvg.closest(".card, .panel, .box, div") : null;
+  if (ddCard && !document.getElementById("capUsedCard")) {
+    const cu = document.createElement("div");
+    cu.id = "capUsedCard";
+    cu.className = "rn-card";
+    cu.style.marginTop = "12px";
+    cu.innerHTML = `
+      <div class="rn-head" style="margin-bottom:8px;">
+        <h3 class="rn-title" style="font-size:14.5px;">Capital Used Over Time (<span id="capUsedUnitLbl">% of Capital</span>)</h3>
+        <div style="display:flex;gap:6px;">
+          <button type="button" id="cuBtnPct" class="rn-btn primary" onclick="setCapUsedUnit('pct')">%</button>
+          <button type="button" id="cuBtnInr" class="rn-btn" onclick="setCapUsedUnit('inr')">INR</button>
+        </div>
+      </div>
+      <svg id="capUsedSvg" viewBox="0 0 1100 220" style="width:100%;height:220px;"></svg>
+    `;
+    ddCard.insertAdjacentElement("afterend", cu);
+  }
+  const simTab = document.getElementById("tab_sim");
+  if (simTab && !document.getElementById("mcCard")) {
+    const mc = document.createElement("div");
+    mc.id = "mcCard";
+    mc.className = "rn-card";
+    mc.style.marginTop = "16px";
+    mc.innerHTML = `
+      <div class="rn-head">
+        <div>
+          <h3 class="rn-title">Monte Carlo Drawdown Simulator (Trade Order Shuffle)</h3>
+          <div class="rn-sub">Shuffles the currently filtered trades to stress-test sequence risk and worst-case drawdown.</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <label style="font-size:12px;">Sims:
+            <select id="mc_sims" style="padding:4px 7px;border-radius:6px;border:1px solid #cbd5e1;">
+              <option value="500">500</option>
+              <option value="1000" selected>1,000</option>
+              <option value="2000">2,000</option>
+            </select>
+          </label>
+          <label style="font-size:12px;">DD Alert %:
+            <input id="mc_dd_thresh" type="number" step="1" value="20" style="width:58px;padding:4px 6px;border-radius:6px;border:1px solid #cbd5e1;">
+          </label>
+          <label style="font-size:12px;">Sizing:
+            <select id="mc_mode" style="padding:4px 7px;border-radius:6px;border:1px solid #cbd5e1;">
+              <option value="compound" selected>Compounding %</option>
+              <option value="fixed">Fixed INR</option>
+            </select>
+          </label>
+          <button type="button" class="rn-btn primary" onclick="runMonteCarlo()">Run Monte Carlo</button>
+        </div>
+      </div>
+      <div id="mcStats" style="display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;margin-bottom:10px;"></div>
+      <svg id="mcSvg" viewBox="0 0 1100 240" style="width:100%;height:240px;"></svg>
+    `;
+    const capCard = document.getElementById("capUsedCard");
+    if (capCard && capCard.parentElement === simTab) capCard.insertAdjacentElement("afterend", mc);
+    else if (ddCard && ddCard.parentElement === simTab) ddCard.insertAdjacentElement("afterend", mc);
+    else simTab.appendChild(mc);
+  }
+}
+
+function runMonteCarlo() {
+  const svg = document.getElementById("mcSvg");
+  const statsEl = document.getElementById("mcStats");
+  if (!svg || !statsEl) return;
+  const trades = filteredTrades.length ? filteredTrades : activeTrades;
+  if (!trades.length) {
+    statsEl.innerHTML = "<span class='rn-sub'>No trades to simulate.</span>";
+    svg.innerHTML = "";
+    return;
+  }
+  const nSims = parseInt(document.getElementById("mc_sims")?.value || "1000", 10);
+  const ddThresh = parseFloat(document.getElementById("mc_dd_thresh")?.value || "20") || 20;
+  const mode = document.getElementById("mc_mode")?.value || "compound";
+  const cap = parseFloat(document.getElementById("capInput")?.value || "1000000") || 1000000;
+
+  const pnls = trades.map(t => t.adj_pnl ?? t.scaled_pnl);
+  const pctRets = pnls.map(p => (cap > 0 ? p / cap : 0));
+  const n = pnls.length;
+  const maxDds = [];
+  const finalPcts = [];
+  const samplePaths = [];
+
+  for (let s = 0; s < nSims; s++) {
+    const idx = Array.from({ length: n }, (_, i) => i);
+    for (let i = n - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = idx[i]; idx[i] = idx[j]; idx[j] = tmp;
+    }
+    let eq = cap, pk = cap, mdd = 0;
+    const path = [0];
+    for (let k = 0; k < n; k++) {
+      const rIdx = idx[k];
+      eq = mode === "compound" ? eq * (1 + pctRets[rIdx]) : eq + pnls[rIdx];
+      if (eq > pk) pk = eq;
+      const dd = pk > 0 ? ((pk - eq) / pk) * 100 : 0;
+      if (dd > mdd) mdd = dd;
+      if (s < 35) path.push(((eq / cap) - 1) * 100);
+    }
+    maxDds.push(mdd);
+    finalPcts.push(((eq / cap) - 1) * 100);
+    if (s < 35) samplePaths.push(path);
+  }
+
+  maxDds.sort((a, b) => a - b);
+  finalPcts.sort((a, b) => a - b);
+  const pctAt = (arr, q) => arr[Math.min(arr.length - 1, Math.floor(arr.length * q))];
+  const medDd = pctAt(maxDds, 0.50);
+  const p95Dd = pctAt(maxDds, 0.95);
+  const p99Dd = pctAt(maxDds, 0.99);
+  const probHit = (maxDds.filter(d => d >= ddThresh).length / nSims) * 100;
+  const medRet = pctAt(finalPcts, 0.50);
+
+  statsEl.innerHTML = `
+    <span><b>Trades Shuffled:</b> ${n}</span>
+    <span><b>Median Return:</b> ${medRet >= 0 ? "+" : ""}${medRet.toFixed(2)}%</span>
+    <span><b>Median Max DD:</b> -${medDd.toFixed(2)}%</span>
+    <span style="color:#f59e0b;"><b>95th Pct DD:</b> -${p95Dd.toFixed(2)}%</span>
+    <span style="color:#ef4444;"><b>99th Pct DD:</b> -${p99Dd.toFixed(2)}%</span>
+    <span><b>Prob(&ge;${ddThresh}% DD):</b> ${probHit.toFixed(1)}%</span>
+  `;
+
+  const W = 1100, H = 240, P = 56, R = 20;
+  let allV = [0];
+  samplePaths.forEach(pt => { allV = allV.concat(pt); });
+  let ymin = Math.min(...allV), ymax = Math.max(...allV);
+  if (ymax === ymin) { ymax += 1; ymin -= 1; }
+  const mx = i => P + (W - P - R) * (i / Math.max(1, n));
+  const my = v => (H - 26) - (H - 44) * ((v - ymin) / (ymax - ymin));
+  const gridCol = DARK_MODE ? "#334155" : "#e2e8f0";
+  const lblCol = DARK_MODE ? "#94a3b8" : "#64748b";
+  let out = "";
+  for (let k = 0; k <= 4; k++) {
+    const v = ymin + (ymax - ymin) * (k / 4), y = my(v);
+    out += `<line x1="${P}" y1="${y}" x2="${W - R}" y2="${y}" stroke="${gridCol}" stroke-dasharray="3,3"/>`;
+    out += `<text x="${P - 6}" y="${y + 4}" font-size="11" text-anchor="end" fill="${lblCol}">${v.toFixed(1)}%</text>`;
+  }
+  samplePaths.forEach(pt => {
+    const pts = pt.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ");
+    out += `<polyline fill="none" stroke="rgba(59,130,246,0.28)" stroke-width="1.3" points="${pts}"/>`;
+  });
+  out += `<text x="${P}" y="${H - 6}" font-size="11" fill="${lblCol}">Trade 0</text><text x="${W - R}" y="${H - 6}" font-size="11" text-anchor="end" fill="${lblCol}">Trade ${n}</text>`;
+  svg.innerHTML = out;
 }
 
 function setupHeaderSessionAndTheme() {
@@ -718,6 +1005,7 @@ function renderRunnerUI() {
             </div>
           </div>
           <div class="rn-field"><label>Runner ATR Mult</label><input type="number" step="0.1" id="sc_runnerAtrMult" value="${f.runnerAtrMult}"></div>
+          <div class="rn-field"><label>Slippage (bps, 10=0.10%)</label><input type="number" step="1" id="sc_slippageBps" value="${f.slippageBps ?? 5}"></div>
           <div class="rn-field" style="grid-column:span 2;"><label>Scenario Notes</label><input id="sc_notes" value="${f.notes || ""}"></div>
         </div>
 
@@ -856,6 +1144,7 @@ function readFormValues() {
     trailEmaInitial: Number(g("sc_trailEmaInitial")) || 21,
     trailEmaRunner: Number(g("sc_trailEmaRunner")) || 9,
     runnerAtrMult: Number(g("sc_runnerAtrMult")) || 0.5,
+    slippageBps: Number(g("sc_slippageBps")) || 0,
     notes: g("sc_notes") || "",
   };
 }
@@ -905,6 +1194,7 @@ strategy:
     trail_ema_runner: ${f.trailEmaRunner}
     runner_atr_period: 14
     runner_atr_mult: ${f.runnerAtrMult}
+    slippage_bps: ${f.slippageBps ?? 5}
 `;
   }
   return `extends: default.yaml
@@ -934,6 +1224,7 @@ strategy:
     trail_ema_runner: ${f.trailEmaRunner}
     runner_atr_period: 14
     runner_atr_mult: ${f.runnerAtrMult}
+    slippage_bps: ${f.slippageBps ?? 5}
 `;
 }
 
@@ -1110,6 +1401,8 @@ async function loadRun(runId) {
   if (!runId) return;
   try {
     const run = await (await fetch("/api/run/" + encodeURIComponent(runId))).json();
+    simViewStart = 0;
+    simViewEnd = null;
     STRATEGIES = run.strategies || [];
     BENCH = run.bench || { dates: [], closes: [] };
     STOCK_BENCH = run.stock_bench || {};
@@ -1235,81 +1528,45 @@ function recalc() {
     if (pctCell) pctCell.textContent = (totPnl ? (contribs[i] / Math.abs(totPnl)) * 100 : 0).toFixed(1) + "%";
   });
 
-  const wins = activeTrades.filter(t => t.scaled_pnl > 0);
-  const losses = activeTrades.filter(t => t.scaled_pnl <= 0);
-  const gp = wins.reduce((a, t) => a + t.scaled_pnl, 0);
-  const glAbs = Math.abs(losses.reduce((a, t) => a + t.scaled_pnl, 0));
-  const netPnlAll = gp - glAbs;
-  const nT = activeTrades.length;
-  const avgWin = wins.length ? gp / wins.length : 0;
-  const avgLoss = losses.length ? glAbs / losses.length : 0;
-  const payoff = avgLoss > 0 ? avgWin / avgLoss : 0;
-  const expInr = nT ? netPnlAll / nT : 0;
-  const expR = nT ? activeTrades.reduce((a, t) => a + Number(t.money_r || 0), 0) / nT : 0;
-  const bestInr = nT ? Math.max(...activeTrades.map(t => t.scaled_pnl)) : 0;
-  const worstInr = nT ? Math.min(...activeTrades.map(t => t.scaled_pnl)) : 0;
-  const bestR = nT ? Math.max(...activeTrades.map(t => Number(t.money_r || 0))) : 0;
-  const worstR = nT ? Math.min(...activeTrades.map(t => Number(t.money_r || 0))) : 0;
-
-  const chrono = [...activeTrades].sort((a, b) => String(a.exit_ts || "").localeCompare(String(b.exit_ts || "")));
-  let maxCW = 0, maxCL = 0, cw = 0, cl = 0;
-  chrono.forEach(t => {
-    if (t.scaled_pnl > 0) { cw++; cl = 0; if (cw > maxCW) maxCW = cw; }
-    else { cl++; cw = 0; if (cl > maxCL) maxCL = cl; }
-  });
-
-  const holdDays = t => {
-    if (!t.entry_ts || !t.exit_ts) return 0;
-    const ms = new Date(t.exit_ts) - new Date(t.entry_ts);
-    return Math.max(0, ms / 86400000);
-  };
-  const avgHoldW = wins.length ? wins.reduce((a, t) => a + holdDays(t), 0) / wins.length : 0;
-  const avgHoldL = losses.length ? losses.reduce((a, t) => a + holdDays(t), 0) / losses.length : 0;
-  const avgHoldAll = nT ? activeTrades.reduce((a, t) => a + holdDays(t), 0) / nT : 0;
-
-  const meanR = rets.length ? rets.reduce((a, b) => a + b, 0) / rets.length : 0;
-  const stdR = rets.length > 1
-    ? Math.sqrt(rets.reduce((a, b) => a + (b - meanR) ** 2, 0) / (rets.length - 1))
-    : 0;
-
-  const kpis = [
-    ["Final Equity", "INR " + Math.round(eq[eq.length - 1]).toLocaleString()],
-    ["Portfolio Return", (portPct[portPct.length - 1] || 0).toFixed(2) + "%"],
-    ["Nifty 50 Return", (benchPct[benchPct.length - 1] || 0).toFixed(2) + "%"],
-    ["Max Drawdown", maxDd.toFixed(2) + "%"],
-    ["Sharpe", (stdR > 0 ? (meanR / stdR) * Math.sqrt(252) : 0).toFixed(2)],
-    ["Total Closed Campaigns", nT],
-    ["Winning Trades", wins.length],
-    ["Losing Trades (incl. BE)", losses.length],
-    ["Win Rate (%)", (nT ? (wins.length / nT) * 100 : 0).toFixed(1) + "%"],
-    ["Avg Win (INR)", "INR " + Math.round(avgWin).toLocaleString()],
-    ["Avg Loss (INR)", "INR " + Math.round(avgLoss).toLocaleString()],
-    ["Payoff Ratio", payoff.toFixed(2)],
-    ["Expectancy / Trade", "INR " + Math.round(expInr).toLocaleString()],
-    ["Expectancy (R)", expR.toFixed(2) + "R"],
-    ["Gross Profit", "INR " + Math.round(gp).toLocaleString()],
-    ["Gross Loss", "INR " + Math.round(glAbs).toLocaleString()],
-    ["Profit Factor", (glAbs > 0 ? gp / glAbs : (gp > 0 ? 999 : 0)).toFixed(2)],
-    ["Best Trade (INR)", "INR " + Math.round(bestInr).toLocaleString()],
-    ["Best Trade (R)", bestR.toFixed(2) + "R"],
-    ["Worst Trade (INR)", "INR " + Math.round(worstInr).toLocaleString()],
-    ["Worst Trade (R)", worstR.toFixed(2) + "R"],
-    ["Max Consec. Wins", maxCW],
-    ["Max Consec. Losses", maxCL],
-    ["Avg Hold Days (Win)", avgHoldW.toFixed(1)],
-    ["Avg Hold Days (Loss)", avgHoldL.toFixed(1)],
-    ["Avg Hold Days (All)", avgHoldAll.toFixed(1)],
-  ];
-
-  const kpiGrid = document.getElementById("kpiGrid");
-  if (kpiGrid) {
-    kpiGrid.innerHTML = kpis
-      .map(([l, v]) => `<div class="kpi"><div class="lbl">${l}</div><div class="val">${v}</div></div>`)
-      .join("");
-  }
-
   populateFilters();
   applyFilters();
+}
+
+function setCapUsedUnit(unit) {
+  capUsedUnit = unit;
+  const bPct = document.getElementById("cuBtnPct");
+  const bInr = document.getElementById("cuBtnInr");
+  const lbl = document.getElementById("capUsedUnitLbl");
+  if (bPct) bPct.className = "rn-btn" + (unit === "pct" ? " primary" : "");
+  if (bInr) bInr.className = "rn-btn" + (unit === "inr" ? " primary" : "");
+  if (lbl) lbl.textContent = unit === "pct" ? "% of Capital" : "INR";
+  if (lastSimSeries) {
+    drawPctChart(lastSimSeries.portPct, lastSimSeries.dd, lastSimSeries.dates, lastSimSeries.benchPct, lastSimSeries.capUsedPct, lastSimSeries.capUsedInr);
+  }
+}
+
+function resetSimRange() {
+  if (!lastSimSeries) return;
+  simViewStart = 0;
+  simViewEnd = Math.max(0, lastSimSeries.dates.length - 1);
+  drawPctChart(lastSimSeries.portPct, lastSimSeries.dd, lastSimSeries.dates, lastSimSeries.benchPct, lastSimSeries.capUsedPct, lastSimSeries.capUsedInr);
+}
+
+function onSimSliderInput() {
+  if (!lastSimSeries) return;
+  const maxIdx = Math.max(0, lastSimSeries.dates.length - 1);
+  const sEl = document.getElementById("simRangeStart");
+  const eEl = document.getElementById("simRangeEnd");
+  if (!sEl || !eEl) return;
+  let s = parseInt(sEl.value, 10) || 0;
+  let e = parseInt(eEl.value, 10) || maxIdx;
+  if (s >= e) {
+    if (document.activeElement === sEl) s = Math.max(0, e - 1);
+    else e = Math.min(maxIdx, s + 1);
+  }
+  simViewStart = Math.max(0, Math.min(maxIdx, s));
+  simViewEnd = Math.max(simViewStart, Math.min(maxIdx, e));
+  drawPctChart(lastSimSeries.portPct, lastSimSeries.dd, lastSimSeries.dates, lastSimSeries.benchPct, lastSimSeries.capUsedPct, lastSimSeries.capUsedInr);
 }
 
 function injectBenchmarkDropdown() {
@@ -1363,35 +1620,59 @@ function fmtTradeDuration(entryTs, exitTs) {
   return days + "d" + (remH ? " " + remH + "h" : "");
 }
 
-function drawPctChart(portPct, dd, dates, benchPct) {
+function drawPctChart(portPct, dd, dates, benchPct, capUsedPct = [], capUsedInr = []) {
   const eSvg = document.getElementById("eqSvg");
   const dSvg = document.getElementById("ddSvg");
+  const cSvg = document.getElementById("capUsedSvg");
   if (!eSvg || !dSvg) return;
 
   if (!portPct.length) {
     eSvg.innerHTML = "";
     dSvg.innerHTML = "";
+    if (cSvg) cSvg.innerHTML = "";
     return;
   }
+
+  lastSimSeries = { portPct, dd, dates, benchPct, capUsedPct, capUsedInr };
+  const totalLen = portPct.length;
+  const sIdx = Math.max(0, Math.min(totalLen - 1, simViewStart));
+  const eIdx = Math.max(sIdx, Math.min(totalLen - 1, simViewEnd ?? (totalLen - 1)));
+  simViewStart = sIdx;
+  simViewEnd = eIdx;
+
+  // Sync top range bar sliders & label
+  const sEl = document.getElementById("simRangeStart");
+  const eEl = document.getElementById("simRangeEnd");
+  const rLbl = document.getElementById("simRangeLbl");
+  if (sEl) { sEl.max = totalLen - 1; sEl.value = sIdx; }
+  if (eEl) { eEl.max = totalLen - 1; eEl.value = eIdx; }
+  if (rLbl) rLbl.textContent = `${dates[sIdx] || ""} → ${dates[eIdx] || ""} (${eIdx - sIdx + 1}d)`;
+
+  const vPort = portPct.slice(sIdx, eIdx + 1);
+  const vDd = dd.slice(sIdx, eIdx + 1);
+  const vDates = dates.slice(sIdx, eIdx + 1);
+  const vBench = benchPct.length === totalLen ? benchPct.slice(sIdx, eIdx + 1) : [];
+  const vCapRaw = (capUsedUnit === "inr" ? capUsedInr : capUsedPct);
+  const vCap = vCapRaw.length === totalLen ? vCapRaw.slice(sIdx, eIdx + 1) : vPort.map(() => 0);
 
   const gridCol = DARK_MODE ? "#334155" : "#e2e8f0";
   const lblCol = DARK_MODE ? "#94a3b8" : "#64748b";
   const showBenchEl = document.getElementById("showBench");
-  const showB = !!(showBenchEl && showBenchEl.checked && benchPct.length === portPct.length);
+  const showB = !!(showBenchEl && showBenchEl.checked && vBench.length === vPort.length);
   if (showBenchEl && showBenchEl.checked) SELECTED_BENCHMARKS.add("NIFTY_50");
 
   const extraSeries = [];
   if (showB && SELECTED_BENCHMARKS.has("NIFTY_50")) {
-    extraSeries.push({ name: "Nifty 50", pct: benchPct, color: BENCH_COLORS[0], dashed: true });
+    extraSeries.push({ name: "Nifty 50", pct: vBench, color: BENCH_COLORS[0], dashed: true });
   }
-  const stockKeys = Object.keys(STOCK_BENCH).sort();
-  stockKeys.forEach((sym, idx) => {
+  Object.keys(STOCK_BENCH).sort().forEach((sym, idx) => {
     if (SELECTED_BENCHMARKS.has(sym)) {
-      const closes = STOCK_BENCH[sym] || [];
-      if (closes.length === portPct.length && closes[0] > 0) {
+      const fullCloses = STOCK_BENCH[sym] || [];
+      if (fullCloses.length === totalLen && fullCloses[0] > 0) {
+        const sub = fullCloses.slice(sIdx, eIdx + 1);
         extraSeries.push({
           name: sym,
-          pct: closes.map(c => (c / closes[0] - 1) * 100),
+          pct: sub.map(c => (c / fullCloses[0] - 1) * 100),
           color: BENCH_COLORS[(idx + 1) % BENCH_COLORS.length],
           dashed: false,
         });
@@ -1400,85 +1681,96 @@ function drawPctChart(portPct, dd, dates, benchPct) {
   });
 
   const W = 1100, H = 320, P = 56, R = 20;
-  let all = portPct.concat([0]);
+  let all = vPort.concat([0]);
   extraSeries.forEach(s => { all = all.concat(s.pct); });
-  let ymin = Math.min(...all);
-  let ymax = Math.max(...all);
-  if (ymax === ymin) {
-    ymax += 1;
-    ymin -= 1;
-  }
+  let ymin = Math.min(...all), ymax = Math.max(...all);
+  if (ymax === ymin) { ymax += 1; ymin -= 1; }
 
-  const mx = i => P + (W - P - R) * (i / Math.max(1, portPct.length - 1));
+  const mx = i => P + (W - P - R) * (i / Math.max(1, vPort.length - 1));
   const my = v => (H - 30) - (H - 50) * ((v - ymin) / (ymax - ymin));
 
   let g = "";
   for (let k = 0; k <= 4; k++) {
-    const v = ymin + (ymax - ymin) * (k / 4);
-    const y = my(v);
+    const v = ymin + (ymax - ymin) * (k / 4), y = my(v);
     g += `<line x1="${P}" y1="${y}" x2="${W - R}" y2="${y}" stroke="${gridCol}" stroke-dasharray="3,3"/>`;
     g += `<text x="${P - 6}" y="${y + 4}" font-size="11" text-anchor="end" fill="${lblCol}">${v.toFixed(1)}%</text>`;
   }
-
   const y0 = my(0);
   g += `<line x1="${P}" y1="${y0}" x2="${W - R}" y2="${y0}" stroke="#94a3b8" stroke-width="1"/>`;
-  const pEq = portPct.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ");
+  const pEq = vPort.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ");
   const pB = extraSeries.map(s =>
     `<polyline fill="none" stroke="${s.color}" stroke-width="1.6" ${s.dashed ? "stroke-dasharray=\"5,4\"" : ""} points="${s.pct.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ")}"/>`
   ).join("");
   const legHtml = extraSeries.map((s, idx) =>
-    `<text x="${P + 10 + idx * 115}" y="16" font-size="10.5" font-weight="600" fill="${s.color}">&#9632; ${s.name}: ${(s.pct[s.pct.length - 1] || 0).toFixed(1)}%</text>`
+    `<text x="${P + 10 + idx * 120}" y="16" font-size="10.5" font-weight="600" fill="${s.color}">&#9632; ${s.name}: ${(s.pct[s.pct.length - 1] || 0).toFixed(1)}%</text>`
   ).join("");
 
   eSvg.innerHTML = `${g}${pB}${legHtml}<polyline fill="none" stroke="#3b82f6" stroke-width="2.4" points="${pEq}"/>
-    <text x="${P}" y="${H - 8}" font-size="11" fill="${lblCol}">${dates[0] || ""}</text>
-    <text x="${W - R}" y="${H - 8}" font-size="11" text-anchor="end" fill="${lblCol}">${dates[dates.length - 1] || ""}</text>`;
+    <text x="${P}" y="${H - 8}" font-size="11" fill="${lblCol}">${vDates[0] || ""}</text>
+    <text x="${W - R}" y="${H - 8}" font-size="11" text-anchor="end" fill="${lblCol}">${vDates[vDates.length - 1] || ""}</text>`;
 
+  // Drawdown chart
   const Hd = 240;
-  const dmin = Math.min(...dd, -0.5);
+  const dmin = Math.min(...vDd, -0.5);
   const myd = v => 20 + (Hd - 50) * (v / dmin);
-  const dPts = dd.map((v, i) => `${mx(i).toFixed(1)},${myd(v).toFixed(1)}`).join(" ");
+  const dPts = vDd.map((v, i) => `${mx(i).toFixed(1)},${myd(v).toFixed(1)}`).join(" ");
   dSvg.innerHTML = `<polygon fill="rgba(220,38,38,0.14)" points="${P},${myd(0)} ${dPts} ${W - R},${myd(0)}"/>
     <polyline fill="none" stroke="#dc2626" stroke-width="2" points="${dPts}"/>
     <text x="${P - 6}" y="${myd(dmin) + 4}" font-size="11" text-anchor="end" fill="${lblCol}">${dmin.toFixed(1)}%</text>`;
 
+  // Capital Used chart
+  const Hc = 220;
+  const cmax = Math.max(...vCap, capUsedUnit === "inr" ? 1000 : 10);
+  const myc = v => (Hc - 28) - (Hc - 46) * (v / cmax);
+  if (cSvg) {
+    let cg = "";
+    for (let k = 0; k <= 3; k++) {
+      const cv = (cmax * k) / 3, cy = myc(cv);
+      const clbl = capUsedUnit === "inr" ? Math.round(cv / 1000) + "k" : cv.toFixed(0) + "%";
+      cg += `<line x1="${P}" y1="${cy}" x2="${W - R}" y2="${cy}" stroke="${gridCol}" stroke-dasharray="3,3"/>`;
+      cg += `<text x="${P - 6}" y="${cy + 4}" font-size="10.5" text-anchor="end" fill="${lblCol}">${clbl}</text>`;
+    }
+    const cPts = vCap.map((v, i) => `${mx(i).toFixed(1)},${myc(v).toFixed(1)}`).join(" ");
+    cSvg.innerHTML = `${cg}<polygon fill="rgba(16,185,129,0.16)" points="${P},${myc(0)} ${cPts} ${W - R},${myc(0)}"/>
+      <polyline fill="none" stroke="#10b981" stroke-width="2" points="${cPts}"/>
+      <text x="${P}" y="${Hc - 8}" font-size="11" fill="${lblCol}">${vDates[0] || ""}</text>
+      <text x="${W - R}" y="${Hc - 8}" font-size="11" text-anchor="end" fill="${lblCol}">${vDates[vDates.length - 1] || ""}</text>`;
+  }
+
   const eqOv = document.createElementNS("http://www.w3.org/2000/svg", "g");
   const ddOv = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  const cuOv = document.createElementNS("http://www.w3.org/2000/svg", "g");
   eSvg.appendChild(eqOv);
   dSvg.appendChild(ddOv);
+  if (cSvg) cSvg.appendChild(cuOv);
 
   const renderSyncHover = idx => {
-    if (idx < 0 || idx >= portPct.length) {
+    if (idx < 0 || idx >= vPort.length) {
       eqOv.innerHTML = "";
       ddOv.innerHTML = "";
+      cuOv.innerHTML = "";
       return;
     }
-    const x = mx(idx);
-    const pv = portPct[idx];
-    const py = my(pv);
-    const dt = dates[idx] || "";
-    const bv = showB ? benchPct[idx] : null;
+    const x = mx(idx), pv = vPort[idx], py = my(pv), dt = vDates[idx] || "";
+    const bv = showB && vBench.length ? vBench[idx] : null;
     const alpha = bv != null ? pv - bv : null;
-
-    const tipW = showB ? 215 : 155;
-    const tipH = showB ? 54 : 38;
+    const tipW = showB ? 215 : 155, tipH = showB ? 54 : 38;
     const tx = Math.min(W - R - tipW - 6, Math.max(P + 6, x + 12));
     const ty = Math.max(12, Math.min(H - tipH - 34, py - tipH / 2));
 
     let eh = `<line x1="${x}" y1="10" x2="${x}" y2="${H - 26}" stroke="#64748b" stroke-width="1" stroke-dasharray="3,3"/>`;
     eh += `<circle cx="${x}" cy="${py}" r="4" fill="#3b82f6" stroke="#fff" stroke-width="1.5"/>`;
-    if (showB) eh += `<circle cx="${x}" cy="${my(bv)}" r="3.5" fill="#94a3b8" stroke="#fff" stroke-width="1.2"/>`;
+    if (showB && bv != null) eh += `<circle cx="${x}" cy="${my(bv)}" r="3.5" fill="#94a3b8" stroke="#fff" stroke-width="1.2"/>`;
     eh += `<rect x="${tx}" y="${ty}" width="${tipW}" height="${tipH}" rx="5" fill="#0f172a" opacity="0.94"/>`;
     eh += `<text x="${tx + 8}" y="${ty + 15}" font-size="10.5" font-weight="700" fill="#e2e8f0">${dt}</text>`;
     eh += `<text x="${tx + 8}" y="${ty + 30}" font-size="11" font-weight="700" fill="#60a5fa">Portfolio: ${pv >= 0 ? "+" : ""}${pv.toFixed(2)}%</text>`;
-    if (showB) {
+    if (showB && bv != null) {
       const aCol = alpha >= 0 ? "#4ade80" : "#f87171";
       eh += `<text x="${tx + 8}" y="${ty + 45}" font-size="10.5" fill="#cbd5e1">Nifty: ${bv >= 0 ? "+" : ""}${bv.toFixed(2)}% | <tspan fill="${aCol}" font-weight="700">${alpha >= 0 ? "+" : ""}${alpha.toFixed(2)}%</tspan></text>`;
     }
     eqOv.innerHTML = eh;
 
-    const dv = dd[idx];
-    const dy = myd(dv);
+    const dv = vDd[idx], dy = myd(dv);
     let dh = `<line x1="${x}" y1="12" x2="${x}" y2="${Hd - 24}" stroke="#64748b" stroke-width="1" stroke-dasharray="3,3"/>`;
     dh += `<circle cx="${x}" cy="${dy}" r="4" fill="#dc2626" stroke="#fff" stroke-width="1.5"/>`;
     const dtx = Math.min(W - R - 150, Math.max(P + 6, x + 12));
@@ -1486,21 +1778,81 @@ function drawPctChart(portPct, dd, dates, benchPct) {
     dh += `<text x="${dtx + 8}" y="26" font-size="10" fill="#cbd5e1">${dt}</text>`;
     dh += `<text x="${dtx + 8}" y="40" font-size="11" font-weight="700" fill="#f87171">DD: ${dv.toFixed(2)}%</text>`;
     ddOv.innerHTML = dh;
+
+    if (cSvg) {
+      const cv = vCap[idx] || 0, cy = myc(cv);
+      const cuTxt = capUsedUnit === "inr" ? "INR " + Math.round(cv).toLocaleString() : cv.toFixed(1) + "%";
+      let ch = `<line x1="${x}" y1="10" x2="${x}" y2="${Hc - 24}" stroke="#64748b" stroke-width="1" stroke-dasharray="3,3"/>`;
+      ch += `<circle cx="${x}" cy="${cy}" r="4" fill="#10b981" stroke="#fff" stroke-width="1.5"/>`;
+      ch += `<rect x="${dtx}" y="12" width="150" height="34" rx="5" fill="#0f172a" opacity="0.94"/>`;
+      ch += `<text x="${dtx + 8}" y="26" font-size="10" fill="#cbd5e1">${dt}</text>`;
+      ch += `<text x="${dtx + 8}" y="40" font-size="11" font-weight="700" fill="#34d399">Used: ${cuTxt}</text>`;
+      cuOv.innerHTML = ch;
+    }
   };
 
   const idxFromEvent = (svgEl, evt) => {
     const rect = svgEl.getBoundingClientRect();
     const sx = (evt.clientX - rect.left) * (W / Math.max(1, rect.width));
     const t = (sx - P) / Math.max(1, W - P - R);
-    return Math.max(0, Math.min(portPct.length - 1, Math.round(t * (portPct.length - 1))));
+    return Math.max(0, Math.min(vPort.length - 1, Math.round(t * (vPort.length - 1))));
   };
 
-  eSvg.style.cursor = "crosshair";
-  dSvg.style.cursor = "crosshair";
-  eSvg.onmousemove = evt => renderSyncHover(idxFromEvent(eSvg, evt));
-  dSvg.onmousemove = evt => renderSyncHover(idxFromEvent(dSvg, evt));
-  eSvg.onmouseleave = () => renderSyncHover(-1);
-  dSvg.onmouseleave = () => renderSyncHover(-1);
+  // Synced Drag-to-Pan & Wheel-to-Zoom across all 3 Simulator charts
+  [eSvg, dSvg, cSvg].filter(Boolean).forEach(svgEl => {
+    let sDragX = null, sDragStart = 0;
+    svgEl.style.cursor = "crosshair";
+    svgEl.onmousedown = evt => {
+      if (evt.button !== 0) return;
+      sDragX = evt.clientX;
+      sDragStart = simViewStart;
+      svgEl.style.cursor = "grabbing";
+    };
+    svgEl.onmousemove = evt => {
+      if (sDragX !== null) {
+        const dx = evt.clientX - sDragX;
+        if (Math.abs(dx) > 4) {
+          const rect = svgEl.getBoundingClientRect();
+          const plotW = Math.max(1, rect.width * ((W - P - R) / W));
+          const span = eIdx - sIdx + 1;
+          const shift = Math.round((-dx / plotW) * span);
+          let ns = sDragStart + shift;
+          let ne = ns + span - 1;
+          if (ns < 0) { ns = 0; ne = span - 1; }
+          if (ne >= totalLen) { ne = totalLen - 1; ns = Math.max(0, ne - span + 1); }
+          if (ns !== simViewStart || ne !== simViewEnd) {
+            simViewStart = ns;
+            simViewEnd = ne;
+            drawPctChart(portPct, dd, dates, benchPct, capUsedPct, capUsedInr);
+            return;
+          }
+        }
+      }
+      renderSyncHover(idxFromEvent(svgEl, evt));
+    };
+    svgEl.onmouseup = () => { sDragX = null; svgEl.style.cursor = "crosshair"; };
+    svgEl.onmouseleave = () => { sDragX = null; svgEl.style.cursor = "crosshair"; renderSyncHover(-1); };
+    svgEl.ondblclick = () => resetSimRange();
+    svgEl.onwheel = evt => {
+      evt.preventDefault();
+      if (totalLen <= 10) return;
+      const rect = svgEl.getBoundingClientRect();
+      const sx = (evt.clientX - rect.left) * (W / Math.max(1, rect.width));
+      const ratio = Math.max(0, Math.min(1, (sx - P) / Math.max(1, W - P - R)));
+      const factor = evt.deltaY < 0 ? 0.82 : 1.22;
+      const oldSpan = eIdx - sIdx + 1;
+      const newSpan = Math.max(10, Math.min(totalLen, Math.round(oldSpan * factor)));
+      if (newSpan === oldSpan) return;
+      const anchor = sIdx + Math.round(oldSpan * ratio);
+      let ns = Math.round(anchor - newSpan * ratio);
+      let ne = ns + newSpan - 1;
+      if (ns < 0) { ns = 0; ne = newSpan - 1; }
+      if (ne >= totalLen) { ne = totalLen - 1; ns = Math.max(0, ne - newSpan + 1); }
+      simViewStart = ns;
+      simViewEnd = ne;
+      drawPctChart(portPct, dd, dates, benchPct, capUsedPct, capUsedInr);
+    };
+  });
 }
 
 function populateFilters() {
@@ -1573,11 +1925,130 @@ function applyFilters() {
     return sortAsc ? na - nb : nb - na;
   });
 
-  const pnl = list.reduce((a, t) => a + t.scaled_pnl, 0);
-  const w = list.filter(t => t.scaled_pnl > 0).length;
+  const cap = parseFloat(document.getElementById("capInput")?.value || "1000000") || 1000000;
+  list.forEach(t => {
+    const qty = Number(t.qty_peak || 0);
+    const avgE = Number(t.avg_entry || 0);
+    const avgX = Number(t.avg_exit || 0);
+    const slipCost = qty > 0 ? qty * (avgE + avgX) * (SIM_SLIPPAGE_PCT / 100.0) : Math.abs(t.scaled_pnl) * (SIM_SLIPPAGE_PCT / 100.0) * 2.0;
+    t.adj_pnl = t.scaled_pnl - slipCost;
+    t.adj_r = (t.scaled_pnl !== 0 && Number.isFinite(Number(t.money_r)))
+      ? Number(t.money_r) * (t.adj_pnl / t.scaled_pnl)
+      : Number(t.money_r || 0);
+  });
+  filteredTrades = list;
+
+  const wins = list.filter(t => t.adj_pnl > 0);
+  const losses = list.filter(t => t.adj_pnl <= 0);
+  const gp = wins.reduce((a, t) => a + t.adj_pnl, 0);
+  const glAbs = Math.abs(losses.reduce((a, t) => a + t.adj_pnl, 0));
+  const pnl = gp - glAbs;
+  const nT = list.length;
+  const avgWin = wins.length ? gp / wins.length : 0;
+  const avgLoss = losses.length ? glAbs / losses.length : 0;
+  const payoff = avgLoss > 0 ? avgWin / avgLoss : 0;
+  const expInr = nT ? pnl / nT : 0;
+  const expR = nT ? list.reduce((a, t) => a + Number(t.adj_r || 0), 0) / nT : 0;
+  const bestInr = nT ? Math.max(...list.map(t => t.adj_pnl)) : 0;
+  const worstInr = nT ? Math.min(...list.map(t => t.adj_pnl)) : 0;
+  const bestR = nT ? Math.max(...list.map(t => Number(t.adj_r || 0))) : 0;
+  const worstR = nT ? Math.min(...list.map(t => Number(t.adj_r || 0))) : 0;
+
+  const chrono = [...list].sort((a, b) => String(a.exit_ts || "").localeCompare(String(b.exit_ts || "")));
+  let maxCW = 0, maxCL = 0, cw = 0, cl = 0;
+  chrono.forEach(t => {
+    if (t.adj_pnl > 0) { cw++; cl = 0; if (cw > maxCW) maxCW = cw; }
+    else { cl++; cw = 0; if (cl > maxCL) maxCL = cl; }
+  });
+
+  const holdDays = t => (t.entry_ts && t.exit_ts) ? Math.max(0, (new Date(t.exit_ts) - new Date(t.entry_ts)) / 86400000) : 0;
+  const avgHoldW = wins.length ? wins.reduce((a, t) => a + holdDays(t), 0) / wins.length : 0;
+  const avgHoldL = losses.length ? losses.reduce((a, t) => a + holdDays(t), 0) / losses.length : 0;
+  const avgHoldAll = nT ? list.reduce((a, t) => a + holdDays(t), 0) / nT : 0;
+
+  // Rebuild filtered Equity Curve & Drawdown from chronological filtered trades
+  const dates = STRATEGIES.length && (STRATEGIES[0].dates || []).length
+    ? STRATEGIES[0].dates
+    : [...new Set(chrono.map(t => String(t.exit_ts || "").slice(0, 10)).filter(Boolean))].sort();
+  const pnlByDay = {};
+  chrono.forEach(t => {
+    const d = String(t.exit_ts || "").slice(0, 10);
+    if (d) pnlByDay[d] = (pnlByDay[d] || 0) + t.adj_pnl;
+  });
+  let runEq = cap, pkEq = cap, maxDdF = 0;
+  const fEq = [], fRets = [];
+  dates.forEach((d, idx) => {
+    const prev = runEq;
+    runEq += (pnlByDay[d] || 0);
+    if (idx > 0 && prev > 0) fRets.push((runEq - prev) / prev);
+    fEq.push(runEq);
+  });
+  const fPortPct = fEq.map(v => (cap > 0 ? (v / cap - 1) * 100 : 0));
+  const fDd = fEq.map(v => {
+    if (v > pkEq) pkEq = v;
+    const dd = pkEq > 0 ? ((v - pkEq) / pkEq) * 100 : 0;
+    if (dd < maxDdF) maxDdF = dd;
+    return dd;
+  });
+  const fBenchPct = BENCH.closes && BENCH.closes.length === fEq.length && BENCH.closes[0] > 0
+    ? BENCH.closes.map(c => (c / BENCH.closes[0] - 1) * 100)
+    : [];
+  const capUsedInr = dates.map(d => {
+    let used = 0;
+    chrono.forEach(t => {
+      const eD = String(t.entry_ts || "").slice(0, 10);
+      const xD = String(t.exit_ts || "").slice(0, 10);
+      if (eD && xD && eD <= d && d <= xD) {
+        used += Number(t.qty_peak || 0) * Number(t.avg_entry || 0);
+      }
+    });
+    return used;
+  });
+  const capUsedPct = capUsedInr.map(v => (cap > 0 ? (v / cap) * 100 : 0));
+  if (simViewEnd === null || simViewEnd >= dates.length) {
+    simViewStart = 0;
+    simViewEnd = Math.max(0, dates.length - 1);
+  }
+  if (fPortPct.length) drawPctChart(fPortPct, fDd, dates, fBenchPct, capUsedPct, capUsedInr);
+
+  const meanR = fRets.length ? fRets.reduce((a, b) => a + b, 0) / fRets.length : 0;
+  const stdR = fRets.length > 1 ? Math.sqrt(fRets.reduce((a, b) => a + (b - meanR) ** 2, 0) / (fRets.length - 1)) : 0;
+  const kpis = [
+    ["Final Equity", "INR " + Math.round(fEq.length ? fEq[fEq.length - 1] : cap + pnl).toLocaleString()],
+    ["Portfolio Return", (fPortPct.length ? fPortPct[fPortPct.length - 1] : (pnl / cap) * 100).toFixed(2) + "%"],
+    ["Nifty 50 Return", (fBenchPct[fBenchPct.length - 1] || 0).toFixed(2) + "%"],
+    ["Max Drawdown", maxDdF.toFixed(2) + "%"],
+    ["Sharpe", (stdR > 0 ? (meanR / stdR) * Math.sqrt(252) : 0).toFixed(2)],
+    ["Total Closed Campaigns", nT],
+    ["Winning Trades", wins.length],
+    ["Losing Trades (incl. BE)", losses.length],
+    ["Win Rate (%)", (nT ? (wins.length / nT) * 100 : 0).toFixed(1) + "%"],
+    ["Avg Win (INR)", "INR " + Math.round(avgWin).toLocaleString()],
+    ["Avg Loss (INR)", "INR " + Math.round(avgLoss).toLocaleString()],
+    ["Payoff Ratio", payoff.toFixed(2)],
+    ["Expectancy / Trade", "INR " + Math.round(expInr).toLocaleString()],
+    ["Expectancy (R)", expR.toFixed(2) + "R"],
+    ["Gross Profit", "INR " + Math.round(gp).toLocaleString()],
+    ["Gross Loss", "INR " + Math.round(glAbs).toLocaleString()],
+    ["Profit Factor", (glAbs > 0 ? gp / glAbs : (gp > 0 ? 999 : 0)).toFixed(2)],
+    ["Best Trade (INR)", "INR " + Math.round(bestInr).toLocaleString()],
+    ["Best Trade (R)", bestR.toFixed(2) + "R"],
+    ["Worst Trade (INR)", "INR " + Math.round(worstInr).toLocaleString()],
+    ["Worst Trade (R)", worstR.toFixed(2) + "R"],
+    ["Max Consec. Wins", maxCW],
+    ["Max Consec. Losses", maxCL],
+    ["Avg Hold Days (Win)", avgHoldW.toFixed(1)],
+    ["Avg Hold Days (Loss)", avgHoldL.toFixed(1)],
+    ["Avg Hold Days (All)", avgHoldAll.toFixed(1)],
+  ];
+  const kpiGrid = document.getElementById("kpiGrid");
+  if (kpiGrid) {
+    kpiGrid.innerHTML = kpis.map(([l, v]) => `<div class="kpi"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join("");
+  }
+
   const bar = document.getElementById("filteredBar");
   if (bar) {
-    bar.innerHTML = `<b>Showing:</b> ${list.length}/${activeTrades.length} | <b>Win Rate:</b> ${(list.length ? (w / list.length) * 100 : 0).toFixed(1)}% | <b>Net P&amp;L:</b> INR ${Math.round(pnl).toLocaleString()}`;
+    bar.innerHTML = `<b>Showing:</b> ${nT}/${activeTrades.length} | <b>Win Rate:</b> ${(nT ? (wins.length / nT) * 100 : 0).toFixed(1)}% | <b>Net P&amp;L (after ${SIM_SLIPPAGE_PCT}%/side slip):</b> INR ${Math.round(pnl).toLocaleString()}`;
   }
 
   const rowsEl = document.getElementById("tradeRows");
@@ -1592,6 +2063,14 @@ function applyFilters() {
       const exitTh = theadRow.children[4];
       if (exitTh && exitTh.nextSibling) theadRow.insertBefore(th, exitTh.nextSibling);
       else theadRow.appendChild(th);
+      const thC = document.createElement("th");
+      thC.setAttribute("data-col", "charges");
+      thC.style.cursor = "pointer";
+      thC.textContent = "Charges";
+      thC.onclick = () => sortBy("charges");
+      const stopTh = theadRow.children[8];
+      if (stopTh && stopTh.nextSibling) theadRow.insertBefore(thC, stopTh.nextSibling);
+      else theadRow.appendChild(thC);
     }
     rowsEl.innerHTML = list.map(t => `<tr>
       <td class="left"><span class="trade-link" onclick="openTrade('${t.uid}')">#${t.trade_id}</span></td>
@@ -1603,8 +2082,9 @@ function applyFilters() {
       <td>${Number(t.avg_entry || 0).toFixed(2)}</td>
       <td>${Number(t.avg_exit || 0).toFixed(2)}</td>
       <td>${Number(t.initial_stop || 0).toFixed(2)}</td>
-      <td class="${t.scaled_pnl >= 0 ? "pos" : "neg"}"><b>${Math.round(t.scaled_pnl).toLocaleString()}</b></td>
-      <td class="${Number(t.money_r || 0) >= 0 ? "pos" : "neg"}">${Number(t.money_r || 0).toFixed(2)}R</td>
+      <td>${Math.round(Number(t.charges || 0)).toLocaleString()}</td>
+      <td class="${t.adj_pnl >= 0 ? "pos" : "neg"}"><b>${Math.round(t.adj_pnl).toLocaleString()}</b></td>
+      <td class="${Number(t.adj_r || 0) >= 0 ? "pos" : "neg"}">${Number(t.adj_r || 0).toFixed(2)}R</td>
       <td class="left">${t.exit_reason || ""}</td>
     </tr>`).join("");
   }
@@ -1691,6 +2171,8 @@ function redrawActiveTrade() {
 function resetCandleView() {
   viewStart = 0;
   viewEnd = Math.max(0, cachedCandles.length - 1);
+  priceScaleMult = 1.0;
+  priceOffset = 0.0;
   redrawActiveTrade();
 }
 
@@ -1866,6 +2348,8 @@ async function fetchTradeChart() {
     cachedPatternShapes = data.pattern_shapes || {};
     viewStart = 0;
     viewEnd = Math.max(0, cachedCandles.length - 1);
+    priceScaleMult = 1.0;
+    priceOffset = 0.0;
     anchorA = null;
     anchorB = null;
     lastMouse = null;
@@ -1919,6 +2403,10 @@ function drawCandles(allBars, pat) {
   const pad = (pmax - pmin) * 0.10 || 1;
   pmin -= pad;
   pmax += pad;
+  const pMid = (pmin + pmax) / 2 + priceOffset;
+  const pHalf = Math.max(0.05, ((pmax - pmin) / 2) * priceScaleMult);
+  pmin = pMid - pHalf;
+  pmax = pMid + pHalf;
 
   const cw = Math.max(1.5, Math.min(14, ((W - P - R) / bars.length) * 0.7));
   const mx = i => P + (W - P - R) * ((i + 0.5) / bars.length);
@@ -2135,11 +2623,15 @@ function drawCandles(allBars, pat) {
   drawOverlay(lastMouse);
 
   let dragStartX = null;
+  let dragStartY = null;
   let dragStartView = 0;
+  let dragStartPriceOff = 0;
+  let dragStartPriceScale = 1.0;
+  let dragMode = "pan2d";
   let didDrag = false;
-
   let dragCalloutId = null;
   let dragCalloutStart = null;
+
   svg.onmousedown = evt => {
     if (evt.button !== 0) return;
     const cg = evt.target && evt.target.closest ? evt.target.closest("[data-callout]") : null;
@@ -2153,10 +2645,16 @@ function drawCandles(allBars, pat) {
       };
       return;
     }
+    const rect = svg.getBoundingClientRect();
+    const sx = (evt.clientX - rect.left) * (W / Math.max(1, rect.width));
+    dragMode = sx < P ? "yscale" : "pan2d";
     dragStartX = evt.clientX;
+    dragStartY = evt.clientY;
     dragStartView = viewStart;
+    dragStartPriceOff = priceOffset;
+    dragStartPriceScale = priceScaleMult;
     didDrag = false;
-    svg.style.cursor = "grabbing";
+    svg.style.cursor = dragMode === "yscale" ? "ns-resize" : "grabbing";
   };
 
   svg.onmousemove = evt => {
@@ -2169,30 +2667,36 @@ function drawCandles(allBars, pat) {
     }
     if (dragStartX !== null) {
       const dx = evt.clientX - dragStartX;
-      if (Math.abs(dx) > 4) {
+      const dy = evt.clientY - dragStartY;
+      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
         didDrag = true;
         const rect = svg.getBoundingClientRect();
+        if (dragMode === "yscale") {
+          priceScaleMult = Math.max(0.15, Math.min(8.0, dragStartPriceScale * Math.exp(dy * 0.008)));
+          drawCandles(allBars, pat);
+          return;
+        }
         const plotW = Math.max(1, rect.width * ((W - P - R) / W));
+        const plotH = Math.max(1, rect.height * ((H - T - B) / H));
         const span = viewEnd - viewStart + 1;
         const barShift = Math.round((-dx / plotW) * span);
         let ns = dragStartView + barShift;
         let ne = ns + (span - 1);
-        if (ns < 0) {
-          ns = 0;
-          ne = span - 1;
-        }
-        if (ne >= allBars.length) {
-          ne = allBars.length - 1;
-          ns = Math.max(0, ne - span + 1);
-        }
-        if (ns !== viewStart || ne !== viewEnd) {
+        if (ns < 0) { ns = 0; ne = span - 1; }
+        if (ne >= allBars.length) { ne = allBars.length - 1; ns = Math.max(0, ne - span + 1); }
+        const newOff = dragStartPriceOff + (dy / plotH) * (pmax - pmin);
+        if (ns !== viewStart || ne !== viewEnd || Math.abs(newOff - priceOffset) > 1e-4) {
           viewStart = ns;
           viewEnd = ne;
+          priceOffset = newOff;
           drawCandles(allBars, pat);
           return;
         }
       }
     }
+    const rectHover = svg.getBoundingClientRect();
+    const sxHover = (evt.clientX - rectHover.left) * (W / Math.max(1, rectHover.width));
+    svg.style.cursor = sxHover < P ? "ns-resize" : "crosshair";
     lastMouse = toPt(evt);
     drawOverlay(lastMouse);
   };
@@ -2233,8 +2737,15 @@ function drawCandles(allBars, pat) {
 
   svg.onwheel = evt => {
     evt.preventDefault();
+    const rect = svg.getBoundingClientRect();
+    const sx = (evt.clientX - rect.left) * (W / Math.max(1, rect.width));
+    const factor = evt.deltaY < 0 ? 0.85 : 1.18;
+    if (sx < P || evt.ctrlKey) {
+      priceScaleMult = Math.max(0.15, Math.min(8.0, priceScaleMult * factor));
+      drawCandles(allBars, pat);
+      return;
+    }
     const pt = toPt(evt);
-    const factor = evt.deltaY < 0 ? 0.82 : 1.22;
     zoomCandles(factor, pt.ratioX);
   };
 }

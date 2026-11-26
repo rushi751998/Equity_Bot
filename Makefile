@@ -7,3 +7,6 @@ lint:
 	ruff check src tests
 typecheck:
 	mypy src
+
+start:
+	tfalgo server

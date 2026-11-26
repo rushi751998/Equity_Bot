@@ -223,6 +223,7 @@ def run_batch_from_frames(
                     "events": str(r.get("events") or ""),
                     "day_emas": day_emas,
                     "candles": candles,
+                    "charges": float(r.get("charges") or 0.0),
                 })
         sim_payload.append({
             "name": label,
