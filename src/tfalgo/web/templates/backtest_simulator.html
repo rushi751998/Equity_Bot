@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Portfolio Simulator — tfalgo{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-head">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <label class="muted">Capital (INR): <input id="capInput" type="number" value="1000000" style="width:120px;"></label>
+      <label class="muted">Slippage %/side: <input id="simSlipInput" type="number" step="0.01" min="0" value="0.05" style="width:76px;"></label>
+      <button type="button" class="btn primary" onclick="equalWeight()">Equal Weight</button>
+      <button type="button" class="btn" onclick="normalizeWeights()">Normalize 100%</button>
+      <label class="muted"><input type="checkbox" id="showBench" checked onchange="recalc()"> Overlay Nifty 50</label>
+      <span id="benchDropdownWrap" style="position:relative;"></span>
+    </div>
+    <span id="allocSummary" class="muted"></span>
+  </div>
+  <table>
+    <thead><tr><th>Active</th><th class="left">Strategy</th><th>Weight %</th><th>Allocated</th><th>Trades</th><th>Contrib P&amp;L</th><th>Contrib %</th></tr></thead>
+    <tbody id="stratRows"></tbody>
+  </table>
+</div>
+
+<div class="kpi-grid" id="kpiGrid"></div>
+
+<div class="card" style="padding:10px 16px;">
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <b style="font-size:12.5px;">Time Window (All 3 Charts):</b>
+    <span id="simRangeLbl" class="muted" style="min-width:175px;">Full Range</span>
+    <label class="muted" style="flex:1;display:flex;align-items:center;gap:6px;">Start <input id="simRangeStart" type="range" min="0" max="100" value="0" style="width:100%;" oninput="onSimSliderInput()"></label>
+    <label class="muted" style="flex:1;display:flex;align-items:center;gap:6px;">End <input id="simRangeEnd" type="range" min="0" max="100" value="100" style="width:100%;" oninput="onSimSliderInput()"></label>
+    <button type="button" class="btn" onclick="resetSimRange()">Reset Window</button>
+  </div>
+</div>
+
+<div class="card"><div class="card-head"><h3 class="card-title">Cumulative Return (%) vs. Benchmarks</h3></div><svg id="eqSvg" viewBox="0 0 1100 320" style="height:320px;"></svg></div>
+<div class="card"><div class="card-head"><h3 class="card-title">Drawdown (%)</h3></div><svg id="ddSvg" viewBox="0 0 1100 240" style="height:240px;"></svg></div>
+<div class="card">
+  <div class="card-head">
+    <h3 class="card-title">Capital Used Over Time (<span id="capUsedUnitLbl">% of Capital</span>)</h3>
+    <div style="display:flex;gap:6px;">
+      <button type="button" id="cuBtnPct" class="btn primary" onclick="setCapUsedUnit('pct')">%</button>
+      <button type="button" id="cuBtnInr" class="btn" onclick="setCapUsedUnit('inr')">INR</button>
+    </div>
+  </div>
+  <svg id="capUsedSvg" viewBox="0 0 1100 220" style="height:220px;"></svg>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div><h3 class="card-title">Monte Carlo Drawdown Simulator</h3><div class="muted">Shuffles filtered trades to stress-test sequence risk.</div></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <select id="mc_sims"><option value="500">500</option><option value="1000" selected>1,000</option><option value="2000">2,000</option></select>
+      <input id="mc_dd_thresh" type="number" value="20" style="width:65px;" title="DD Alert %">
+      <select id="mc_mode"><option value="compound" selected>Compounding %</option><option value="fixed">Fixed INR</option></select>
+      <button type="button" class="btn primary" onclick="runMonteCarlo()">Run Monte Carlo</button>
+    </div>
+  </div>
+  <div id="mcStats" style="display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;margin-bottom:8px;"></div>
+  <svg id="mcSvg" viewBox="0 0 1100 240" style="height:240px;"></svg>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <select id="fStrat" onchange="applyFilters()"><option value="">Strategy: All</option></select>
+      <select id="fSym" onchange="applyFilters()"><option value="">Symbol: All</option></select>
+      <select id="fOut" onchange="applyFilters()"><option value="">Outcome: All</option><option value="win">Winners</option><option value="loss">Losers</option></select>
+      <select id="fReg" onchange="applyFilters()"><option value="">Regime: All</option></select>
+      <select id="fExit" onchange="applyFilters()"><option value="">Exit: All</option></select>
+      <input id="fFrom" type="date" onchange="applyFilters()">
+      <input id="fTo" type="date" onchange="applyFilters()">
+      <button type="button" class="btn" onclick="clearFilters()">Clear</button>
+    </div>
+    <span id="filteredBar" class="muted"></span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th class="left" onclick="sortBy('trade_id')">ID</th>
+          <th class="left" onclick="sortBy('strategy')">Strategy</th>
+          <th class="left" onclick="sortBy('symbol')">Symbol</th>
+          <th class="left" onclick="sortBy('entry_ts')">Entry Time</th>
+          <th class="left" onclick="sortBy('exit_ts')">Exit Time</th>
+          <th onclick="sortBy('duration_ms')">Duration</th>
+          <th onclick="sortBy('avg_entry')">Entry</th>
+          <th onclick="sortBy('avg_exit')">Exit</th>
+          <th onclick="sortBy('initial_stop')">Stop</th>
+          <th onclick="sortBy('charges')">Charges</th>
+          <th onclick="sortBy('adj_pnl')">Net P&amp;L</th>
+          <th onclick="sortBy('adj_r')">R</th>
+          <th class="left" onclick="sortBy('exit_reason')">Exit Reason</th>
+        </tr>
+      </thead>
+      <tbody id="tradeRows"></tbody>
+    </table>
+  </div>
+</div>
+
+<div id="tradeModal" class="modal">
+  <div class="modal-card">
+    <div class="card-head">
+      <div><h3 id="modalTitle" class="card-title"></h3><div id="modalSub" class="muted"></div></div>
+      <button type="button" class="btn" onclick="closeModal()">Close (Esc)</button>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+      <button type="button" class="btn tf-btn active" onclick="setTf('5m', this)">5m</button>
+      <button type="button" class="btn tf-btn" onclick="setTf('15m', this)">15m</button>
+      <button type="button" class="btn tf-btn" onclick="setTf('1h', this)">1H</button>
+      <button type="button" class="btn tf-btn" onclick="setTf('1d', this)">1D</button>
+      <button type="button" class="btn tf-btn" onclick="setTf('1w', this)">1W</button>
+      <label class="muted"><input type="checkbox" id="togEmas" checked onchange="redrawActiveTrade()"> EMAs</label>
+      <label class="muted"><input type="checkbox" id="togVol" checked onchange="redrawActiveTrade()"> Vol</label>
+      <button type="button" class="btn" onclick="shiftChartWindow(-7,0)">&laquo; Earlier</button>
+      <button type="button" class="btn" onclick="shiftChartWindow(0,7)">Later &raquo;</button>
+      <button type="button" id="tfReplayBtn" class="btn primary" onclick="toggleReplay()">&#9654; Replay</button>
+      <select id="tfReplaySpeed" onchange="setReplaySpeed(this.value)"><option value="1">1x</option><option value="1.5">1.5x</option><option value="2">2x</option><option value="3">3x</option></select>
+      <button type="button" class="btn" onclick="stopReplay(true)">Reset</button>
+      <button type="button" id="tfMaxChartBtn" class="btn" onclick="toggleMaximizeChart()">⛶ Maximize</button>
+    </div>
+    <svg id="candleSvg" viewBox="0 0 1100 500" style="height:500px;"></svg>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/chart_modal.js"></script>
+<script src="/static/js/simulator.js"></script>
+{% endblock %}

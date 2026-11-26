@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Scanners — tfalgo{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-head">
+    <div>
+      <h2 class="card-title">Multi-Stock Scanner</h2>
+      <div class="muted">Filter across stored symbols and send setups straight to the Portfolio Quick Execution ticket.</div>
+    </div>
+    <button type="button" class="btn primary" onclick="runScanner()">Run Scan</button>
+  </div>
+  <div class="form-grid">
+    <div class="field"><label>Timeframe</label>
+      <select id="scn_tf"><option value="1d">1d</option><option value="1h">1h</option><option value="5m">5m</option></select>
+    </div>
+    <div class="field"><label>Min % Change</label><input id="scn_min_chg" type="number" step="0.5" value="1.0"></div>
+    <div class="field"><label>Max % Change</label><input id="scn_max_chg" type="number" step="0.5" value="20.0"></div>
+    <div class="field"><label>Min Volume Mult</label><input id="scn_vol" type="number" step="0.1" value="1.5"></div>
+    <div class="field"><label>Above EMA 21</label>
+      <select id="scn_ema"><option value="1">Yes</option><option value="0">Any</option></select>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2 class="card-title">Scan Matches</h2><span id="scn_status" class="muted"></span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th class="left">Symbol</th><th>Close</th><th>Candle Low</th><th>% Chg</th><th>Vol Mult</th><th>EMA 21</th><th class="left">Action</th></tr></thead>
+      <tbody id="scnRows"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/js/scanners.js"></script>{% endblock %}

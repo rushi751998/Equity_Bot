@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Data Upload — tfalgo{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-head">
+    <div>
+      <h2 class="card-title">Upload Market Data to DB (.csv, .xlsx, .parquet)</h2>
+      <div class="muted">Columns: date/ts, open, high, low, close, volume. Filename becomes symbol if override is blank.</div>
+    </div>
+  </div>
+  <div class="form-grid">
+    <div class="field" style="grid-column:span 2;"><label>Select File(s)</label><input type="file" id="du_files" multiple accept=".csv,.xlsx,.xls,.parquet"></div>
+    <div class="field"><label>Symbol Override</label><input id="du_symbol" placeholder="e.g. RELIANCE"></div>
+    <div class="field"><label>Timeframe</label><select id="du_tf"><option value="5m" selected>5m</option><option value="15m">15m</option><option value="1h">1h</option><option value="1d">1d</option></select></div>
+    <div class="field"><label>Index Data?</label><label class="muted" style="margin-top:6px;"><input type="checkbox" id="du_isIndex"> Store as Index (idx:...)</label></div>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center;margin-top:12px;">
+    <button type="button" class="btn primary" onclick="uploadDataFiles()">Upload &amp; Store in DB</button>
+    <span id="du_status" class="muted"></span>
+  </div>
+  <pre id="du_log" class="log-box" style="display:none;margin-top:12px;"></pre>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/js/data_upload.js"></script>{% endblock %}

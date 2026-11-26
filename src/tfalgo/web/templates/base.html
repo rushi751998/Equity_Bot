@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>{% block title %}tfalgo Quant Workstation{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <script>
+    if (localStorage.getItem("tfalgo_theme_v1") === "dark") document.documentElement.classList.add("tf-dark");
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>tfalgo Quant Workstation</h1>
+      <nav class="nav">
+        <a href="/portfolio" class="{{ 'active' if active_nav == 'portfolio' else '' }}">Portfolio</a>
+        <a href="/scanners" class="{{ 'active' if active_nav == 'scanners' else '' }}">Scanners</a>
+        <a href="/backtest/simulator" class="{{ 'active' if active_nav.startswith('backtest') else '' }}">Backtest</a>
+        <a href="/settings" class="{{ 'active' if active_nav == 'settings' else '' }}">Settings</a>
+      </nav>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span id="healthBadge" class="muted">Sync: --</span>
+      <label class="muted" style="display:flex;align-items:center;gap:6px;">
+        Session:
+        <select id="globalSessionSelect"></select>
+      </label>
+      <button type="button" class="btn" onclick="openUserGuide()">ⓘ Guide</button>
+      <button type="button" id="themeToggleBtn" class="btn" onclick="toggleTheme()">🌙 Dark</button>
+      <button type="button" class="btn danger" onclick="panicFlattenAll()">Flatten All</button>
+    </div>
+  </header>
+
+  {% if active_nav.startswith('backtest') %}
+  <div class="subnav">
+    <a href="/backtest/simulator" class="{{ 'active' if active_nav == 'backtest_sim' else '' }}">Portfolio Simulator</a>
+    <a href="/backtest/runner" class="{{ 'active' if active_nav == 'backtest_runner' else '' }}">Run Backtest / Studio</a>
+    <a href="/backtest/data" class="{{ 'active' if active_nav == 'backtest_data' else '' }}">Data Upload</a>
+  </div>
+  {% endif %}
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+
+  <div id="userGuideModal" class="modal">
+    <div class="modal-card" style="max-width:820px;">
+      <div class="card-head">
+        <div><h3 class="card-title">tfalgo Quant Workstation — Interactive User Guide</h3><div class="muted">Hover or tap any ⓘ icon across the app for field-level help.</div></div>
+        <button type="button" class="btn" onclick="document.getElementById('userGuideModal').classList.remove('open')">Close</button>
+      </div>
+      <div style="display:grid;gap:12px;font-size:13px;line-height:1.5;">
+        <div><b>1. Portfolio &amp; Smart Execution:</b> Enter a <b>% Capital Invest</b> (e.g. 5%), Limit Price, and Stop Loss (₹ or %). Clicking <b>Place Smart Order + Auto-SL</b> sends a LIMIT order, chases LTP every 5s (up to your Settings retry limit), and arms an SL-M + optional partial Target Limit orders automatically.</div>
+        <div><b>2. 10s SL Watchdog &amp; Telegram Alerts:</b> Every 10 seconds the background worker syncs with your broker, verifies your SL order is still open (re-placing or Market-exiting if removed/breached), and evaluates your <b>Price Alerts</b> to ping Telegram remotely.</div>
+        <div><b>3. Pre-Trade R:R &amp; Kelly Calculator:</b> Computes exact shares, Risk %, Breakeven Win Rate, Expectancy (₹ &amp; R), and Kelly compounding trades needed before you place a trade.</div>
+        <div><b>4. Trade Journal &amp; Screenshots:</b> Click any Open Position or Closed Trade to view every fill, add setup notes, upload chart images, or press <b>Ctrl+V</b> to paste clipboard screenshots directly.</div>
+        <div><b>5. Scanners &amp; Backtest Studio:</b> Scan stored stocks and click <b>Load Trade →</b> to pre-fill the Portfolio ticket. Use <b>Backtest</b> to test <code>dynamic_v1</code> / <code>ema_breakout_v1</code>, upload CSV/Excel/Parquet data, and run Monte Carlo drawdown stress tests.</div>
+        <div><b>6. Settings (.env, PyOTP, MongoDB):</b> Configure Paper, Zerodha, Fyers, or Kotak Neo credentials in <code>.env</code>, set up PyOTP 2FA, test multi-bot Telegram alerts, and connect MongoDB for permanent trade &amp; audit persistence.</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/core.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
