@@ -93,7 +93,7 @@ def zerodha_exchange_token(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 @router.get("/accounts_status")
 def check_accounts_status() -> dict[str, Any]:
-    from tfalgo.web.core.brokers import PaperBroker, ZerodhaBroker
+    from tfalgo.web.core.brokers import KotakNeoBroker, PaperBroker, ZerodhaBroker
     cfg = load_settings()
     out = []
     for a in (cfg.get("accounts") or []):
@@ -110,8 +110,11 @@ def check_accounts_status() -> dict[str, Any]:
                     zb = ZerodhaBroker(a)
                     d = zb._req("GET", "/user/profile").get("data", {})
                     ok, detail = True, f"Connected ({d.get('user_name') or d.get('user_id') or aid})"
-            else:
-                ok, detail = bool(a.get("access_token")), ("Token saved" if a.get("access_token") else "Stub / Missing Token")
+            elif brk == "kotak_neo":
+                merged = {**cfg.get("brokers", {}).get("kotak_neo", {}), **a}
+                kb = KotakNeoBroker(merged)
+                ltp = kb.get_ltp("RELIANCE")
+                ok, detail = ltp > 0, f"Connected (RELIANCE ₹{ltp})"
         except Exception as exc:
             ok, detail = False, str(exc)
         out.append({"account_id": aid, "broker": brk, "connected": ok, "detail": detail})

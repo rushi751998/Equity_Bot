@@ -469,3 +469,17 @@ def sync_nse_ipo_symbols() -> dict[str, Any]:
 def get_equity_snapshots() -> dict[str, Any]:
     snaps = _load_json_list(EQUITY_SNAPS_PATH)
     return {"ok": True, "snapshots": snaps}
+
+
+@router.get("/historical")
+def get_historical_candles(symbol: str = "RELIANCE", exchange: str = "NSE", interval: str = "D", from_date: str | None = None, to_date: str | None = None) -> dict[str, Any]:
+    from tfalgo.web.core.brokers import KotakNeoBroker, get_tick_broker
+    full_sym = f"{exchange.upper()}:{symbol.upper()}" if exchange.upper() == "BSE" else symbol.upper()
+    tb = get_tick_broker()
+    if not isinstance(tb, KotakNeoBroker):
+        tb = KotakNeoBroker()
+    try:
+        candles = tb.get_historical_data(full_sym, interval=interval, from_date=from_date, to_date=to_date)
+        return {"ok": True, "symbol": full_sym, "interval": interval, "count": len(candles), "candles": candles}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}

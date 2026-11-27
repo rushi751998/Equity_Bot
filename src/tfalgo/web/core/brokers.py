@@ -318,6 +318,104 @@ class PaperBroker(BrokerClient):
         return list(self.positions)
 
 
+
+class KotakNeoBroker(BrokerClient):
+    """Kotak Neo Trade API client for live LTP (nse_cm/bse_cm) & historical OHLCV."""
+    name = "kotak_neo"
+    _CACHE_PATH = __import__("pathlib").Path("data/kotak_scrip_cache.json")
+
+    def __init__(self, acct_cfg: dict[str, Any] | None = None) -> None:
+        self.cfg = acct_cfg or load_settings()["brokers"]["kotak_neo"]
+        self.account_id = str(self.cfg.get("account_id") or "KOTAK_1")
+        self.user_name = str(self.cfg.get("user_name") or self.account_id)
+        self._client = None
+
+    def _get_client(self):
+        if self._client is not None:
+            return self._client
+        ckey = str(self.cfg.get("consumer_key") or self.cfg.get("api_key") or "").strip()
+        if not ckey:
+            raise RuntimeError(f"{self.account_id}: Kotak Consumer Key / API Key required")
+        try:
+            from neo_api_client import NeoAPI
+        except ImportError as exc:
+            raise RuntimeError("Install Kotak SDK first: pip install kotakneoapi") from exc
+        self._client = NeoAPI(consumer_key=ckey, environment="prod")
+        return self._client
+
+    def _resolve_token(self, symbol: str) -> tuple[str, str]:
+        exch, sym = split_exchange_symbol(symbol)
+        seg = "bse_cm" if exch == "BSE" else "nse_cm"
+        cache_key = f"{seg}:{sym}"
+        cache: dict[str, str] = {}
+        if self._CACHE_PATH.exists():
+            try:
+                cache = json.loads(self._CACHE_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                cache = {}
+        if cache_key in cache:
+            return seg, str(cache[cache_key])
+        cli = self._get_client()
+        res = cli.search_scrip(exchange_segment=seg, symbol=sym)
+        rows = res if isinstance(res, list) else (res.get("data") or [])
+        tok = ""
+        target_trd = f"{sym}-EQ"
+        for r in rows:
+            trd = str(r.get("pTrdSymbol") or "").upper()
+            sname = str(r.get("pSymbolName") or "").upper()
+            if trd == target_trd or sname == sym or trd == sym:
+                tok = str(r.get("pSymbol") or "")
+                break
+        if not tok and rows:
+            tok = str(rows[0].get("pSymbol") or "")
+        if not tok:
+            raise RuntimeError(f"Kotak token not found for {seg}:{sym}")
+        cache[cache_key] = tok
+        self._CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self._CACHE_PATH.write_text(json.dumps(cache), encoding="utf-8")
+        return seg, tok
+
+    def get_profile(self) -> dict[str, str]:
+        return {"user_id": self.account_id, "user_name": self.user_name}
+
+    def get_ltp(self, symbol: str) -> float:
+        seg, tok = self._resolve_token(symbol)
+        cli = self._get_client()
+        res = cli.quotes(instrument_tokens=[{"instrument_token": tok, "exchange_segment": seg}], quote_type="ltp")
+        rows = res if isinstance(res, list) else (res.get("data") or res.get("message") or [])
+        if isinstance(rows, list) and rows:
+            return float(rows[0].get("ltp") or rows[0].get("last_traded_price") or 0.0)
+        if isinstance(res, dict) and res.get("ltp"):
+            return float(res["ltp"])
+        return 0.0
+
+    def get_historical_data(self, symbol: str, interval: str = "D", from_date: str | None = None, to_date: str | None = None) -> list[list[Any]]:
+        from datetime import timedelta
+        seg, tok = self._resolve_token(symbol)
+        iv_map = {"1m": "1min", "3m": "3min", "5m": "5min", "10m": "10min", "15m": "15min", "30m": "30min", "1h": "60min", "60m": "60min", "1d": "D", "1w": "W"}
+        iv = iv_map.get(interval.lower(), interval)
+        days_back = 25 if iv in ("1min", "3min", "5min") else (55 if iv in ("10min", "15min") else (85 if iv in ("30min", "60min") else 175))
+        td = to_date or datetime.now().strftime("%Y-%m-%d")
+        fd = from_date or (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        res = self._get_client().historical_data(neosymbol=f"{seg}|{tok}", interval=iv, from_date=fd, to_date=td)
+        return res.get("data", {}).get("candles", []) if isinstance(res, dict) else []
+
+    def get_historical_df(self, symbol: str, tf: str = "1d"):
+        import pandas as pd
+        candles = self.get_historical_data(symbol, interval=tf)
+        if not candles:
+            return pd.DataFrame()
+        df = pd.DataFrame(candles, columns=["ts", "open", "high", "low", "close", "volume", "oi"])
+        df["ts"] = pd.to_datetime(df["ts"])
+        return df.set_index("ts")[["open", "high", "low", "close", "volume"]].astype(float).dropna()
+
+    def place_order(self, *a, **kw) -> dict[str, Any]: raise NotImplementedError("Kotak Neo order placement requires TOTP+MPIN trading session")
+    def modify_order(self, *a, **kw) -> dict[str, Any]: raise NotImplementedError("Kotak Neo modify requires trading session")
+    def cancel_order(self, *a, **kw) -> dict[str, Any]: raise NotImplementedError("Kotak Neo cancel requires trading session")
+    def get_orders(self) -> list[dict[str, Any]]: return []
+    def get_positions(self) -> list[dict[str, Any]]: return []
+
+
 class LiveBrokerStub(BrokerClient):
     def __init__(self, broker_name: str, account_id: str = "STUB_1", user_name: str = "") -> None:
         self.name = broker_name
@@ -346,6 +444,9 @@ def get_broker_for_account(account_id: str | None = None) -> BrokerClient:
         b = target.get("broker", "paper")
         if b == "zerodha" and target.get("access_token"):
             return ZerodhaBroker(target)
+        if b == "kotak_neo" and (target.get("api_key") or target.get("consumer_key") or load_settings()["brokers"]["kotak_neo"].get("consumer_key")):
+            merged = {**load_settings()["brokers"]["kotak_neo"], **target}
+            return KotakNeoBroker(merged)
         if b == "paper":
             _PAPER_SINGLETON.account_id = target.get("account_id") or "PAPER_1"
             _PAPER_SINGLETON.user_name = target.get("user_name") or "Paper Pilot"

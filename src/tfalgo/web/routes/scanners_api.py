@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 from fastapi import APIRouter, Body, Request
 
-from tfalgo.web.core.brokers import get_active_broker
+from tfalgo.web.core.brokers import get_active_broker, get_tick_broker
 
 router = APIRouter(prefix="/api/scanners", tags=["scanners"])
 
@@ -93,17 +93,20 @@ def run_scanner(request: Request, body: dict[str, Any] = Body(...)) -> dict[str,
         syms = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "TATAMOTORS"]
 
     matches: list[dict[str, Any]] = []
-    broker = get_active_broker() if source == "broker" else None
+    broker = get_tick_broker() if source == "broker" else None
 
     for sym in sorted(syms)[:80]:
         try:
             if source == "yfinance":
                 pdf = _fetch_yf_ohlcv(sym, tf)
             elif source == "broker" and broker is not None:
-                ltp = broker.get_ltp(sym)
-                if ltp > 0:
-                    matches.append({"symbol": sym, "close": round(ltp, 2), "low": round(ltp * 0.99, 2), "chg_pct": 0.0, "vol_mult": 1.0, "ema21": round(ltp, 2), "strategy": "broker_ltp"})
-                continue
+                if hasattr(broker, "get_historical_df"):
+                    pdf = broker.get_historical_df(sym, tf)
+                else:
+                    ltp = broker.get_ltp(sym)
+                    if ltp > 0:
+                        matches.append({"symbol": sym, "close": round(ltp, 2), "low": round(ltp * 0.99, 2), "chg_pct": 0.0, "vol_mult": 1.0, "ema21": round(ltp, 2), "strategy": "broker_ltp"})
+                    continue
             else:
                 pl_df = store.read_bars(sym, cfg.run.base_timeframe)
                 if pl_df.is_empty():
