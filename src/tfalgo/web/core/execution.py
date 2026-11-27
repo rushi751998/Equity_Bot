@@ -69,7 +69,6 @@ class ExecutionManager:
             ord_res = broker.place_order(symbol, side, qty, "LIMIT", product, price=limit_price)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
-        ord_res = broker.place_order(symbol, side, qty, "LIMIT", product, price=limit_price)
         self.push_toast("buy" if side == "BUY" else "target", f"{symbol} {side} {qty} LIMIT @ ₹{limit_price} ({broker.account_id})")
         STORE.log_audit("order_placed", {"order": ord_res, "sl_price": sl_price, "target_price": target_price})
 

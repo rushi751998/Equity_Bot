@@ -89,3 +89,30 @@ def zerodha_exchange_token(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         return {"ok": True, "access_token": access_token}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+@router.get("/accounts_status")
+def check_accounts_status() -> dict[str, Any]:
+    from tfalgo.web.core.brokers import PaperBroker, ZerodhaBroker
+    cfg = load_settings()
+    out = []
+    for a in (cfg.get("accounts") or []):
+        aid = str(a.get("account_id") or "")
+        brk = str(a.get("broker") or "paper").lower()
+        ok, detail = False, "Not configured"
+        try:
+            if brk == "paper":
+                ok, detail = True, "Paper Ready"
+            elif brk == "zerodha":
+                if not a.get("api_key") or not a.get("access_token"):
+                    ok, detail = False, "Missing API Key or Access Token"
+                else:
+                    zb = ZerodhaBroker(a)
+                    d = zb._req("GET", "/user/profile").get("data", {})
+                    ok, detail = True, f"Connected ({d.get('user_name') or d.get('user_id') or aid})"
+            else:
+                ok, detail = bool(a.get("access_token")), ("Token saved" if a.get("access_token") else "Stub / Missing Token")
+        except Exception as exc:
+            ok, detail = False, str(exc)
+        out.append({"account_id": aid, "broker": brk, "connected": ok, "detail": detail})
+    return {"ok": True, "statuses": out}

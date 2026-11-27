@@ -1,3 +1,4 @@
+let ACCOUNT_STATUS_MAP = {};
 let BROKER_ACCOUNTS = [];
 let TG_BOTS = [];
 
@@ -64,6 +65,7 @@ async function loadSettingsUI() {
   TG_BOTS = s.telegram_bots || [];
   BROKER_ACCOUNTS = s.accounts || [];
   renderAccountsManager();
+  checkAccountsStatus();
   renderTgBots();
 }
 
@@ -78,7 +80,8 @@ function renderAccountsManager() {
       <div class="field"><label>Broker</label><select onchange="BROKER_ACCOUNTS[${i}].broker=this.value"><option value="paper" ${a.broker==="paper"?"selected":""}>Paper</option><option value="zerodha" ${a.broker==="zerodha"?"selected":""}>Zerodha</option><option value="fyers" ${a.broker==="fyers"?"selected":""}>Fyers</option><option value="kotak_neo" ${a.broker==="kotak_neo"?"selected":""}>Kotak Neo</option></select></div>
       <div class="field"><label>API Key</label><input type="password" value="${a.api_key || ""}" oninput="BROKER_ACCOUNTS[${i}].api_key=this.value"></div>
       <div class="field"><label>Access Token</label><input type="password" value="${a.access_token || ""}" oninput="BROKER_ACCOUNTS[${i}].access_token=this.value"></div>
-      <div style="display:flex;gap:8px;align-items:center;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <span id="acct_st_${a.account_id}" title="${(ACCOUNT_STATUS_MAP[a.account_id]?.detail || "")}" style="font-size:12px;font-weight:700;color:${ACCOUNT_STATUS_MAP[a.account_id]?.connected ? "#10b981" : "#ef4444"};">${ACCOUNT_STATUS_MAP[a.account_id] ? (ACCOUNT_STATUS_MAP[a.account_id].connected ? "✅" : "❌") : "⏳"}</span>
         <label class="muted" style="font-size:11.5px;"><input type="radio" name="tickSrc" ${a.is_tick_source?"checked":""} onchange="BROKER_ACCOUNTS.forEach((x,j)=>x.is_tick_source=(j===${i}))"> Tick Source</label>
         <button type="button" class="btn danger" style="padding:4px 8px;" onclick="BROKER_ACCOUNTS.splice(${i},1);renderAccountsManager()">×</button>
       </div>
@@ -202,3 +205,14 @@ async function verifyPyotp() {
 }
 
 document.addEventListener("DOMContentLoaded", loadSettingsUI);
+
+
+async function checkAccountsStatus() {
+  try {
+    const res = await (await fetch("/api/settings/accounts_status")).json();
+    if (!res.ok) return;
+    ACCOUNT_STATUS_MAP = {};
+    (res.statuses || []).forEach(s => { ACCOUNT_STATUS_MAP[s.account_id] = s; });
+    renderAccountsManager();
+  } catch {}
+}

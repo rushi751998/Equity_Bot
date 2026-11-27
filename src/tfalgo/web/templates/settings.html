@@ -70,7 +70,7 @@
 <div class="card">
   <div class="card-head">
     <div><h3 class="card-title">Connected Broker Accounts (Multi-Account + Live Tick Source)</h3><div class="muted">Add multiple accounts from the same or different brokers, and pick which account feeds live ticks.</div></div>
-    <button type="button" class="btn primary" onclick="addBrokerAccount()">+ Add Account</button>
+    <div style="display:flex;gap:6px;"><button type="button" class="btn" onclick="checkAccountsStatus()">↻ Validate Connections</button><button type="button" class="btn primary" onclick="addBrokerAccount()">+ Add Account</button></div>
   </div>
   <div id="accountsManagerBox" style="display:grid;gap:10px;"></div>
 </div>

@@ -16,7 +16,8 @@ function applyCustomThemeColors(tc) {
 window.applyCustomThemeColors = applyCustomThemeColors;
 
 
-const SEEN_TOAST_IDS = new Set();
+const SEEN_TOAST_IDS = new Set(JSON.parse(localStorage.getItem("tfalgo_seen_toasts_v1") || "[]"));
+let ALERT_HISTORY = JSON.parse(localStorage.getItem("tfalgo_alert_hist_v1") || "[]");
 
 function showOrderToast(kind, message) {
   const wrap = document.getElementById("tfToastContainer");
@@ -82,12 +83,22 @@ async function initCoreHeader() {
         if (pb) pb.textContent = `👤 ${ps.profile.user_name || ps.profile.user_id}`;
       }
       if (ps && Array.isArray(ps.toasts)) {
+        let added = false;
         ps.toasts.forEach(t => {
           if (!SEEN_TOAST_IDS.has(t.id)) {
             SEEN_TOAST_IDS.add(t.id);
+            ALERT_HISTORY.unshift({ id: t.id, kind: t.kind, message: t.message, ts: t.ts || new Date().toLocaleTimeString() });
+            added = true;
             showOrderToast(t.kind, t.message);
           }
         });
+        if (added) {
+          localStorage.setItem("tfalgo_seen_toasts_v1", JSON.stringify([...SEEN_TOAST_IDS].slice(-200)));
+          ALERT_HISTORY = ALERT_HISTORY.slice(0, 50);
+          localStorage.setItem("tfalgo_alert_hist_v1", JSON.stringify(ALERT_HISTORY));
+        }
+        const cntEl = document.getElementById("alertBadgeCnt");
+        if (cntEl) cntEl.textContent = `(${ALERT_HISTORY.length})`;
       }
     } catch {}
   };
@@ -158,3 +169,25 @@ function attachHelpIcons(root = document) {
 window.attachHelpIcons = attachHelpIcons;
 
 document.addEventListener("DOMContentLoaded", () => { initCoreHeader(); attachHelpIcons(); });
+
+
+function openAlertHistory() {
+  const list = document.getElementById("alertHistoryList");
+  if (list) {
+    list.innerHTML = ALERT_HISTORY.length ? ALERT_HISTORY.map(a => {
+      const col = a.kind === "sl" ? "#ef4444" : "#10b981";
+      return `<div style="padding:8px 10px;border-radius:8px;border-left:4px solid ${col};background:var(--card-alt);display:flex;justify-content:space-between;gap:10px;">
+        <span>${a.message}</span><span class="muted" style="white-space:nowrap;font-size:11px;">${String(a.ts || "").slice(0, 19).replace("T", " ")}</span>
+      </div>`;
+    }).join("") : '<div class="muted">No alerts recorded yet.</div>';
+  }
+  document.getElementById("alertHistoryModal")?.classList.add("open");
+}
+
+function clearAlertHistory() {
+  ALERT_HISTORY = [];
+  localStorage.setItem("tfalgo_alert_hist_v1", "[]");
+  const cntEl = document.getElementById("alertBadgeCnt");
+  if (cntEl) cntEl.textContent = "(0)";
+  openAlertHistory();
+}

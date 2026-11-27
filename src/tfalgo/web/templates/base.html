@@ -38,6 +38,7 @@
         Session:
         <select id="globalSessionSelect"></select>
       </label>
+      <button type="button" class="btn" id="alertBellBtn" onclick="openAlertHistory()">🔔 Alerts <span id="alertBadgeCnt" style="font-size:11px;opacity:0.85;">(0)</span></button>
       <button type="button" class="btn" onclick="openUserGuide()">ⓘ Guide</button>
       <button type="button" id="themeToggleBtn" class="btn" onclick="toggleTheme()">🌙 Dark</button>
       <button type="button" class="btn danger" onclick="panicFlattenAll()">Flatten All</button>
@@ -57,6 +58,20 @@
     {% block content %}{% endblock %}
   </main>
 
+
+  
+  <div id="alertHistoryModal" class="modal">
+    <div class="modal-card" style="max-width:600px;">
+      <div class="card-head">
+        <div><h3 class="card-title">Order &amp; Watchdog Alert History</h3><div class="muted">Only new alerts pop up on screen; full history is kept here.</div></div>
+        <div style="display:flex;gap:6px;">
+          <button type="button" class="btn" onclick="clearAlertHistory()">Clear</button>
+          <button type="button" class="btn" onclick="document.getElementById('alertHistoryModal').classList.remove('open')">Close</button>
+        </div>
+      </div>
+      <div id="alertHistoryList" style="display:grid;gap:8px;max-height:55vh;overflow:auto;font-size:12.5px;"></div>
+    </div>
+  </div>
 
   <div id="userGuideModal" class="modal">
     <div class="modal-card" style="max-width:820px;">
