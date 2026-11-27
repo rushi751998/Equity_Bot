@@ -1,6 +1,10 @@
-"""Plug-and-play BrokerClient interface + Paper, Zerodha, Fyers, Kotak Neo adapters."""
+"""Plug-and-play BrokerClient interface + Paper, Zerodha Kite v3 REST, Fyers, Kotak Neo."""
 from __future__ import annotations
 
+import hashlib
+import json
+import urllib.parse
+import urllib.request
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -31,8 +35,127 @@ class BrokerClient(ABC):
     def get_positions(self) -> list[dict[str, Any]]: ...
 
 
+class ZerodhaBroker(BrokerClient):
+    """Direct Zerodha Kite Connect v3 REST API implementation (https://kite.trade/docs/connect/v3/)."""
+    name = "zerodha"
+    BASE = "https://api.kite.trade"
+
+    def __init__(self) -> None:
+        self.cfg = load_settings()["brokers"]["zerodha"]
+
+    def _headers(self) -> dict[str, str]:
+        api_key = self.cfg.get("api_key", "")
+        token = self.cfg.get("access_token", "")
+        if not api_key or not token:
+            raise RuntimeError("Zerodha api_key and access_token are required in Settings / .env")
+        return {
+            "X-Kite-Version": "3",
+            "Authorization": f"token {api_key}:{token}",
+        }
+
+    def _req(self, method: str, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        url = f"{self.BASE}{path}"
+        body = urllib.parse.urlencode(data).encode("utf-8") if data else None
+        req = urllib.request.Request(url, data=body, headers=self._headers(), method=method)
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    @staticmethod
+    def login_url(api_key: str) -> str:
+        return f"https://kite.zerodha.com/connect/login?v=3&api_key={urllib.parse.quote(api_key)}"
+
+    @classmethod
+    def exchange_request_token(cls, api_key: str, api_secret: str, request_token: str) -> dict[str, Any]:
+        checksum = hashlib.sha256(f"{api_key}{request_token}{api_secret}".encode("utf-8")).hexdigest()
+        body = urllib.parse.urlencode({
+            "api_key": api_key,
+            "request_token": request_token,
+            "checksum": checksum,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{cls.BASE}/session/token",
+            data=body,
+            headers={"X-Kite-Version": "3"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def get_ltp(self, symbol: str) -> float:
+        inst = symbol if ":" in symbol else f"NSE:{symbol.upper()}"
+        res = self._req("GET", f"/quote/ltp?i={urllib.parse.quote(inst)}")
+        return float(res.get("data", {}).get(inst, {}).get("last_price", 0.0))
+
+    def place_order(self, symbol: str, side: str, qty: int, order_type: str, product: str, price: float | None = None, trigger_price: float | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "tradingsymbol": symbol.upper(),
+            "exchange": "NSE",
+            "transaction_type": side.upper(),
+            "order_type": order_type.upper(),
+            "quantity": int(qty),
+            "product": product.upper(),
+            "validity": "DAY",
+        }
+        if price is not None and order_type.upper() in ("LIMIT", "SL"):
+            payload["price"] = float(price)
+        if trigger_price is not None and order_type.upper() in ("SL", "SL-M"):
+            payload["trigger_price"] = float(trigger_price)
+        res = self._req("POST", "/orders/regular", payload)
+        oid = res.get("data", {}).get("order_id", "")
+        return {"order_id": oid, "symbol": symbol.upper(), "side": side.upper(), "qty": qty, "order_type": order_type.upper(), "product": product.upper(), "price": price or 0.0, "trigger_price": trigger_price, "status": "OPEN", "ts": datetime.now().isoformat()}
+
+    def modify_order(self, order_id: str, price: float | None = None, trigger_price: float | None = None, order_type: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if price is not None:
+            payload["price"] = float(price)
+        if trigger_price is not None:
+            payload["trigger_price"] = float(trigger_price)
+        if order_type is not None:
+            payload["order_type"] = order_type.upper()
+        res = self._req("PUT", f"/orders/regular/{order_id}", payload)
+        return {"order_id": order_id, "status": "MODIFIED", "raw": res}
+
+    def cancel_order(self, order_id: str) -> dict[str, Any]:
+        res = self._req("DELETE", f"/orders/regular/{order_id}")
+        return {"order_id": order_id, "status": "CANCELLED", "raw": res}
+
+    def get_orders(self) -> list[dict[str, Any]]:
+        res = self._req("GET", "/orders")
+        out = []
+        for o in res.get("data", []):
+            out.append({
+                "order_id": o.get("order_id"),
+                "symbol": o.get("tradingsymbol"),
+                "side": o.get("transaction_type"),
+                "qty": int(o.get("quantity", 0)),
+                "order_type": o.get("order_type"),
+                "product": o.get("product"),
+                "price": float(o.get("average_price") or o.get("price") or 0.0),
+                "trigger_price": o.get("trigger_price"),
+                "status": o.get("status"),
+                "ts": o.get("order_timestamp") or "",
+            })
+        return out
+
+    def get_positions(self) -> list[dict[str, Any]]:
+        res = self._req("GET", "/portfolio/positions")
+        out = []
+        for p in res.get("data", {}).get("net", []):
+            nq = int(p.get("quantity", 0))
+            if nq == 0:
+                continue
+            out.append({
+                "symbol": p.get("tradingsymbol"),
+                "product": p.get("product"),
+                "net_qty": nq,
+                "avg_price": float(p.get("average_price", 0.0)),
+                "ltp": float(p.get("last_price", 0.0)),
+                "mtm": float(p.get("pnl", 0.0)),
+            })
+        return out
+
+
 class PaperBroker(BrokerClient):
-    """In-memory + persisted Paper Trading broker with editable LTP feed."""
     name = "paper"
 
     def __init__(self) -> None:
@@ -45,9 +168,9 @@ class PaperBroker(BrokerClient):
     def _persist(self) -> None:
         STORE.save_live_state({
             "ltp_map": self.ltp_map,
-            "orders": self.orders[-200:],
+            "orders": self.orders[-300:],
             "positions": self.positions,
-            "closed_trades": self.closed_trades[-500:],
+            "closed_trades": self.closed_trades[-1000:],
         })
 
     def set_ltp(self, symbol: str, ltp: float) -> None:
@@ -64,16 +187,11 @@ class PaperBroker(BrokerClient):
             self.ltp_map[sym] = float(price)
         oid = f"PPR_{uuid.uuid4().hex[:8].upper()}"
         ord_rec = {
-            "order_id": oid,
-            "symbol": sym,
-            "side": side.upper(),
-            "qty": int(qty),
-            "order_type": order_type.upper(),
-            "product": product.upper(),
+            "order_id": oid, "symbol": sym, "side": side.upper(), "qty": int(qty),
+            "order_type": order_type.upper(), "product": product.upper(),
             "price": float(price or self.get_ltp(sym)),
             "trigger_price": float(trigger_price) if trigger_price else None,
-            "status": "OPEN",
-            "ts": datetime.now().isoformat(),
+            "status": "OPEN", "ts": datetime.now().isoformat(),
         }
         self.orders.append(ord_rec)
         self._process_fills()
@@ -83,12 +201,9 @@ class PaperBroker(BrokerClient):
     def modify_order(self, order_id: str, price: float | None = None, trigger_price: float | None = None, order_type: str | None = None) -> dict[str, Any]:
         for o in self.orders:
             if o["order_id"] == order_id and o["status"] in ("OPEN", "TRIGGER_PENDING"):
-                if price is not None:
-                    o["price"] = float(price)
-                if trigger_price is not None:
-                    o["trigger_price"] = float(trigger_price)
-                if order_type is not None:
-                    o["order_type"] = order_type.upper()
+                if price is not None: o["price"] = float(price)
+                if trigger_price is not None: o["trigger_price"] = float(trigger_price)
+                if order_type is not None: o["order_type"] = order_type.upper()
                 self._process_fills()
                 self._persist()
                 return o
@@ -129,28 +244,16 @@ class PaperBroker(BrokerClient):
         pos = next((p for p in self.positions if p["symbol"] == symbol and p["product"] == product), None)
         if pos is None:
             self.positions.append({
-                "symbol": symbol,
-                "product": product,
-                "net_qty": signed,
-                "peak_qty": abs(signed),
-                "avg_price": round(px, 2),
-                "sl_price": None,
-                "sl_order_id": None,
-                "target_price": None,
-                "initial_sl": None,
-                "initial_risk_inr": 0.0,
-                "realized_pnl": 0.0,
-                "exit_notional": 0.0,
-                "exit_qty": 0,
+                "symbol": symbol, "product": product, "net_qty": signed, "peak_qty": abs(signed),
+                "avg_price": round(px, 2), "sl_price": None, "sl_order_id": None, "target_price": None,
+                "initial_risk_inr": 0.0, "realized_pnl": 0.0, "exit_notional": 0.0, "exit_qty": 0,
                 "fills": [{"ts": now_iso, "side": side, "qty": abs(signed), "price": round(px, 2), "pnl": 0.0, "note": "Entry"}],
                 "opened_at": now_iso,
             })
             return
-
         old_q = pos["net_qty"]
         new_q = old_q + signed
         is_add = (old_q > 0 and signed > 0) or (old_q < 0 and signed < 0)
-
         if is_add:
             tot_val = abs(old_q) * pos["avg_price"] + abs(signed) * px
             pos["avg_price"] = round(tot_val / abs(new_q), 2)
@@ -159,7 +262,6 @@ class PaperBroker(BrokerClient):
             pos.setdefault("fills", []).append({"ts": now_iso, "side": side, "qty": abs(signed), "price": round(px, 2), "pnl": 0.0, "note": "Scale-In"})
             return
 
-        # Partial or full exit
         closed_q = min(abs(old_q), abs(signed))
         part_pnl = (px - pos["avg_price"]) * closed_q if old_q > 0 else (pos["avg_price"] - px) * closed_q
         pos["realized_pnl"] = round(float(pos.get("realized_pnl", 0.0)) + part_pnl, 2)
@@ -174,21 +276,13 @@ class PaperBroker(BrokerClient):
             init_risk = float(pos.get("initial_risk_inr") or 0.0)
             if init_risk <= 0 and pos.get("sl_price"):
                 init_risk = abs(pos["avg_price"] - float(pos["sl_price"])) * pos.get("peak_qty", tot_ex_q)
-            money_r = round(tot_pnl / init_risk, 2) if init_risk > 0 else 0.0
             self.closed_trades.append({
                 "trade_id": f"LIVE_{len(self.closed_trades) + 1}",
-                "symbol": symbol,
-                "product": product,
-                "side": "LONG" if old_q > 0 else "SHORT",
-                "qty": pos.get("peak_qty", tot_ex_q),
-                "entry_price": pos["avg_price"],
-                "exit_price": avg_exit,
-                "initial_risk_inr": round(init_risk, 2),
-                "net_pnl": round(tot_pnl, 2),
-                "money_r": money_r,
-                "fills": pos.get("fills", []),
-                "opened_at": pos.get("opened_at"),
-                "closed_at": now_iso,
+                "symbol": symbol, "product": product, "side": "LONG" if old_q > 0 else "SHORT",
+                "qty": pos.get("peak_qty", tot_ex_q), "entry_price": pos["avg_price"], "exit_price": avg_exit,
+                "initial_risk_inr": round(init_risk, 2), "net_pnl": round(tot_pnl, 2),
+                "money_r": round(tot_pnl / init_risk, 2) if init_risk > 0 else 0.0,
+                "fills": pos.get("fills", []), "opened_at": pos.get("opened_at"), "closed_at": now_iso,
             })
             self.positions = [p for p in self.positions if p is not pos]
         else:
@@ -207,36 +301,14 @@ class PaperBroker(BrokerClient):
 
 
 class LiveBrokerStub(BrokerClient):
-    """Adapter scaffold for Zerodha Kite / Fyers / Kotak Neo using .env + PyOTP."""
     def __init__(self, broker_name: str) -> None:
         self.name = broker_name
-        self.cfg = load_settings()["brokers"].get(broker_name, {})
-
-    def _require_token(self) -> None:
-        if not self.cfg.get("access_token"):
-            raise RuntimeError(f"{self.name} access_token not configured in Settings / .env")
-
-    def get_ltp(self, symbol: str) -> float:
-        self._require_token()
-        raise NotImplementedError(f"Connect {self.name} SDK quote call here")
-
-    def place_order(self, symbol: str, side: str, qty: int, order_type: str, product: str, price: float | None = None, trigger_price: float | None = None) -> dict[str, Any]:
-        self._require_token()
-        raise NotImplementedError(f"Connect {self.name} SDK order placement here")
-
-    def modify_order(self, order_id: str, price: float | None = None, trigger_price: float | None = None, order_type: str | None = None) -> dict[str, Any]:
-        self._require_token()
-        raise NotImplementedError(f"Connect {self.name} SDK order modify here")
-
-    def cancel_order(self, order_id: str) -> dict[str, Any]:
-        self._require_token()
-        raise NotImplementedError(f"Connect {self.name} SDK order cancel here")
-
-    def get_orders(self) -> list[dict[str, Any]]:
-        return []
-
-    def get_positions(self) -> list[dict[str, Any]]:
-        return []
+    def get_ltp(self, symbol: str) -> float: return 0.0
+    def place_order(self, *a, **kw) -> dict[str, Any]: raise NotImplementedError(f"{self.name} adapter")
+    def modify_order(self, *a, **kw) -> dict[str, Any]: raise NotImplementedError(f"{self.name} adapter")
+    def cancel_order(self, *a, **kw) -> dict[str, Any]: raise NotImplementedError(f"{self.name} adapter")
+    def get_orders(self) -> list[dict[str, Any]]: return []
+    def get_positions(self) -> list[dict[str, Any]]: return []
 
 
 _PAPER_SINGLETON = PaperBroker()
@@ -246,4 +318,6 @@ def get_active_broker() -> BrokerClient:
     name = load_settings().get("active_broker", "paper")
     if name == "paper":
         return _PAPER_SINGLETON
+    if name == "zerodha":
+        return ZerodhaBroker()
     return LiveBrokerStub(name)

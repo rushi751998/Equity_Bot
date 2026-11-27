@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Request
 
 from tfalgo.web.core.brokers import PaperBroker, get_active_broker
 from tfalgo.web.core.config_store import STORE, load_settings
@@ -28,6 +28,7 @@ def get_portfolio_state() -> dict[str, Any]:
     realized = sum(float(t.get("net_pnl", 0.0)) for t in closed)
     mtm = sum(float(p.get("mtm", 0.0)) for p in snap["positions"])
     cap = float(cfg.get("paper_capital", 1_000_000.0))
+    j_keys = sorted({x.get("trade_key") for x in _load_json_list(JOURNAL_PATH) if x.get("trade_key")})
     return {
         "ok": True,
         "broker": broker.name,
@@ -39,6 +40,7 @@ def get_portfolio_state() -> dict[str, Any]:
         "orders": snap["orders"][-50:][::-1],
         "closed_trades": closed[-30:][::-1],
         "last_sync_ts": snap["last_sync_ts"],
+        "journal_keys": j_keys,
     }
 
 
@@ -353,3 +355,56 @@ def add_fund_txn(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
     _save_json_list(FUNDS_PATH, txns)
     STORE.log_audit("fund_txn", rec)
     return {"ok": True, "txn": rec}
+
+
+NSE_SYMBOLS_PATH = Path("data/nse_symbols.json")
+EQUITY_SNAPS_PATH = Path("data/equity_snapshots.json")
+
+
+@router.get("/symbols")
+def get_autocomplete_symbols(request: Request) -> dict[str, Any]:
+    from tfalgo.config import load_config
+    from tfalgo.factory import build_store
+
+    syms: set[str] = set()
+    try:
+        cfg = load_config(request.app.state.default_config)
+        store = build_store(cfg)
+        syms.update(s for s in store.list_symbols(cfg.run.base_timeframe) if not s.startswith("idx:"))
+    except Exception:
+        pass
+    if NSE_SYMBOLS_PATH.exists():
+        try:
+            syms.update(json.loads(NSE_SYMBOLS_PATH.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    if not syms:
+        syms.update(["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "TATAMOTORS", "BAJFINANCE"])
+    return {"ok": True, "symbols": sorted(syms)}
+
+
+@router.post("/symbols/sync")
+def sync_nse_ipo_symbols() -> dict[str, Any]:
+    """Fetch latest NSE equity & newly listed IPO symbols from NSE public EQUITY_L.csv."""
+    import csv
+    import io
+    import urllib.request
+
+    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            text = resp.read().decode("utf-8", errors="ignore")
+        reader = csv.DictReader(io.StringIO(text))
+        syms = sorted({row["SYMBOL"].strip().upper() for row in reader if row.get("SYMBOL")})
+        NSE_SYMBOLS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        NSE_SYMBOLS_PATH.write_text(json.dumps(syms), encoding="utf-8")
+        return {"ok": True, "count": len(syms)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.get("/snapshots")
+def get_equity_snapshots() -> dict[str, Any]:
+    snaps = _load_json_list(EQUITY_SNAPS_PATH)
+    return {"ok": True, "snapshots": snaps}

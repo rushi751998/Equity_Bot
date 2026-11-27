@@ -1,114 +1,53 @@
 {% extends "base.html" %}
-{% block title %}Portfolio &amp; Quick Execution — tfalgo{% endblock %}
+{% block title %}Portfolio &amp; Live Performance — tfalgo{% endblock %}
 {% block content %}
 <div class="kpi-grid" id="portKpiGrid"></div>
 
-<div class="grid-2">
-  <div class="card">
-    <div class="card-head">
-      <div>
-        <h2 class="card-title">Quick Execution Ticket (5s Limit Chase + Auto-SL)</h2>
-        <div class="muted">Places LIMIT order, chases LTP every 5s, arms SL automatically, and enforces MIS on SHORTs.</div>
-      </div>
+<div class="card">
+  <div class="card-head">
+    <div>
+      <h2 class="card-title">Live Portfolio Performance</h2>
+      <div class="muted">Actual realized &amp; running trade metrics (All / Closed / Running).</div>
     </div>
-    <div class="form-grid">
-      <div class="field"><label>Symbol</label><input id="ord_symbol" value="RELIANCE"></div>
-      <div class="field"><label>Side</label>
-        <select id="ord_side"><option value="BUY">BUY (Long)</option><option value="SELL">SELL (Short - MIS)</option></select>
-      </div>
-      <div class="field"><label>Product</label>
-        <select id="ord_product"><option value="MIS">MIS (Intraday)</option><option value="CNC">CNC (Delivery)</option></select>
-      </div>
-      <div class="field"><label>% Capital Invest</label><input id="ord_cap_pct" type="number" step="0.5" value="5" oninput="recalcTicket()"></div>
-      <div class="field"><label>Limit Price (₹)</label><input id="ord_price" type="number" step="0.05" value="2950" oninput="recalcTicket()"></div>
-      <div class="field">
-        <label style="display:flex;justify-content:space-between;align-items:center;">
-          <span>Stop Loss</span>
-          <span>
-            <button type="button" id="slModePxBtn" class="btn primary" style="padding:1px 6px;font-size:10.5px;" onclick="setSlMode('px')">₹</button>
-            <button type="button" id="slModePctBtn" class="btn" style="padding:1px 6px;font-size:10.5px;" onclick="setSlMode('pct')">%</button>
-          </span>
-        </label>
-        <input id="ord_sl" type="number" step="0.05" value="2930" oninput="recalcTicket()">
-        <span id="slResolvedLbl" class="muted" style="font-size:11px;"></span>
-      </div>
-      <div class="field"><label>Target Price (₹)</label><input id="ord_target" type="number" step="0.05" value="3010" oninput="recalcTicket()"></div>
-      <div class="field"><label>Quantity (Shares)</label><input id="ord_qty" type="number" value="16"></div>
-    </div>
-    <div style="margin-top:12px;border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--card-alt);">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
-        <b style="font-size:12.5px;">Dynamic Partial Target Exits</b>
-        <div style="display:flex;gap:10px;align-items:center;">
-          <label class="muted" style="font-size:11.5px;"><input type="checkbox" id="ord_be_after_t1" checked> Move SL to Breakeven after T1</label>
-          <button type="button" class="btn" style="padding:3px 9px;font-size:11.5px;" onclick="addTargetLeg()">+ Add Target</button>
-        </div>
-      </div>
-      <div id="targetLegsBox" style="display:grid;gap:6px;"></div>
-    </div>
-
-    <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;">
-      <button type="button" class="btn primary" onclick="submitSmartOrder()">Place Smart Order + Auto-SL</button>
-      <span id="ord_msg" class="muted"></span>
-    </div>
-
-    <hr style="border:none;border-top:1px solid var(--border);margin:14px 0;">
-    <div class="card-head" style="margin-bottom:8px;">
-      <h3 class="card-title" style="font-size:13.5px;">Paper LTP Tick Tester</h3>
-      <span class="muted">Simulate live price moves for 5s chase &amp; SL Watchdog testing</span>
-    </div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-      <input id="tick_sym" value="RELIANCE" style="width:120px;">
-      <input id="tick_ltp" type="number" step="0.05" value="2950" style="width:110px;">
-      <button type="button" class="btn" onclick="sendPaperTick()">Update Paper LTP</button>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <button type="button" class="btn primary perf-filter-btn" onclick="setPerfFilter('all', this)">All Trades</button>
+      <button type="button" class="btn perf-filter-btn" onclick="setPerfFilter('closed', this)">Closed Trades</button>
+      <button type="button" class="btn perf-filter-btn" onclick="setPerfFilter('running', this)">Running Trades</button>
     </div>
   </div>
+  <div class="kpi-grid" id="perfMetricsGrid" style="margin-bottom:0;"></div>
+</div>
 
-  <div class="card">
-    <div class="card-head">
-      <div>
-        <h2 class="card-title">Pre-Trade R:R, Expectancy &amp; Kelly Calculator</h2>
-        <div class="muted">Independent from backtest. Evaluates exact edge before you press Place Order.</div>
-      </div>
+<div class="card">
+  <div class="card-head">
+    <div><h2 class="card-title">Portfolio Curves (Daily Snapshots)</h2><div class="muted">Automatically tracks Account P&amp;L %, Capital Used, and Drawdown daily.</div></div>
+    <div style="display:flex;gap:6px;">
+      <button type="button" id="pCuPctBtn" class="btn primary" onclick="setPortCuUnit('pct')">Cap Used %</button>
+      <button type="button" id="pCuInrBtn" class="btn" onclick="setPortCuUnit('inr')">Cap Used ₹</button>
     </div>
-    <div class="form-grid" style="margin-bottom:10px;">
-      <div class="field"><label>Capital (₹)</label><input id="calc_cap" type="number" value="1000000" oninput="recalcTicket()"></div>
-      <div class="field"><label>Risk % / Trade</label><input id="calc_risk_pct" type="number" step="0.1" value="1.0" oninput="recalcTicket()"></div>
-      <div class="field"><label>Assumed Win Rate %</label><input id="calc_wr" type="number" step="1" value="45" oninput="recalcTicket()"></div>
-      <div class="field"><label>Avg Win (R) / Loss (R)</label>
-        <div style="display:flex;gap:6px;">
-          <input id="calc_win_r" type="number" step="0.1" value="2.5" style="width:50%;" oninput="recalcTicket()">
-          <input id="calc_loss_r" type="number" step="0.1" value="1.0" style="width:50%;" oninput="recalcTicket()">
-        </div>
-      </div>
-      <div class="field"><label>Round-Trip Cost %</label><input id="calc_cost" type="number" step="0.02" value="0.12" oninput="recalcTicket()"></div>
-      <div class="field"><label>Target Profit (₹)</label><input id="calc_target_inr" type="number" value="1000000" oninput="recalcTicket()"></div>
-    </div>
-    <div class="table-wrap" style="max-height:290px;">
-      <table>
-        <thead><tr><th class="left">Metric</th><th>Value</th></tr></thead>
-        <tbody id="calcMetricsBody"></tbody>
-      </table>
-    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;">
+    <div><div class="muted" style="font-size:11.5px;margin-bottom:4px;"><b>Account P&amp;L (%)</b></div><svg id="portEqSvg" viewBox="0 0 550 170" style="height:170px;"></svg></div>
+    <div><div class="muted" style="font-size:11.5px;margin-bottom:4px;"><b>Capital Used</b></div><svg id="portCapSvg" viewBox="0 0 550 170" style="height:170px;"></svg></div>
+    <div><div class="muted" style="font-size:11.5px;margin-bottom:4px;"><b>Drawdown (%)</b></div><svg id="portDdSvg" viewBox="0 0 550 170" style="height:170px;"></svg></div>
   </div>
 </div>
 
 <div class="card" style="padding:10px 14px;">
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;" id="portSubTabs">
-    <button type="button" class="btn primary port-subtab" onclick="showPortSection('positions', this)">1. Open Positions</button>
-    <button type="button" class="btn port-subtab" onclick="showPortSection('open_orders', this)">2. Open Orders</button>
-    <button type="button" class="btn port-subtab" onclick="showPortSection('recent_orders', this)">3. Recent Orders</button>
-    <button type="button" class="btn port-subtab" onclick="showPortSection('alerts', this)">4. Telegram Alerts</button>
-    <button type="button" class="btn port-subtab" onclick="showPortSection('funds', this)">5. Funds &amp; Charges</button>
+    <button type="button" class="btn primary port-subtab" onclick="showPortSection('positions', this)">Open Positions</button>
+    <button type="button" class="btn port-subtab" onclick="showPortSection('open_orders', this)">Open Orders</button>
+    <button type="button" class="btn port-subtab" onclick="showPortSection('recent_orders', this)">Recent Orders</button>
+    <button type="button" class="btn port-subtab" onclick="showPortSection('closed_trades', this)">Closed Trades</button>
+    <button type="button" class="btn port-subtab" onclick="showPortSection('alerts', this)">Telegram Alerts</button>
+    <button type="button" class="btn port-subtab" onclick="showPortSection('funds', this)">Funds &amp; Charges</button>
   </div>
 </div>
 
 <div id="psec_positions" class="port-sec">
   <div class="card">
     <div class="card-head">
-      <div>
-        <h2 class="card-title">Open Positions (10s Broker Sync + SL Watchdog)</h2>
-        <div class="muted">Live running R, % Allocation, portfolio risk %, and custom % or Qty partial exits.</div>
-      </div>
+      <div><h2 class="card-title">Open Positions (10s Broker Sync + SL Watchdog)</h2></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <span class="muted" style="font-size:12px;">Exit Mode:</span>
         <button type="button" id="exitModePctBtn" class="btn primary" onclick="setExitMode('pct')">% Based</button>
@@ -120,7 +59,7 @@
       <table>
         <thead>
           <tr>
-            <th class="left">Symbol</th><th class="left">Product</th><th>Qty</th><th>Alloc %</th>
+            <th style="width:28px;">👁</th><th class="left">Symbol</th><th class="left">Product</th><th>Qty</th><th>Alloc %</th>
             <th>Avg Entry</th><th>LTP</th><th>SL</th><th>Target</th><th>Risk (₹ / %)</th>
             <th>Live R</th><th>MTM (₹)</th><th class="left">Quick Exit</th>
           </tr>
@@ -129,24 +68,12 @@
       </table>
     </div>
   </div>
-
-  <div class="card">
-    <div class="card-head">
-      <div><h2 class="card-title">Closed Trades &amp; Campaign R</h2><div class="muted">Click any Open Position or Closed Trade to inspect charges, % change, R, and fill log.</div></div>
-    </div>
-    <div class="table-wrap" style="max-height:260px;">
-      <table>
-        <thead><tr><th class="left">ID</th><th class="left">Symbol</th><th class="left">Side</th><th>Qty</th><th>Avg Entry</th><th>Avg Exit</th><th>% Chg</th><th>Charges (₹)</th><th>Risk (₹)</th><th>Net P&amp;L (₹)</th><th>Final R</th><th class="left">Closed At</th></tr></thead>
-        <tbody id="closedRows"></tbody>
-      </table>
-    </div>
-  </div>
 </div>
 
 <div id="psec_open_orders" class="port-sec" style="display:none;">
   <div class="card">
     <div class="card-head">
-      <div><h2 class="card-title">Open &amp; Pending Orders</h2><div class="muted">Filterable open/trigger-pending orders with % Capital Allocation.</div></div>
+      <div><h2 class="card-title">Open Orders</h2><div class="muted">Filterable open/trigger-pending orders with % Capital Allocation.</div></div>
       <input id="openOrdFilter" placeholder="Filter symbol, side, type, status..." oninput="renderOpenOrders()" style="width:240px;">
     </div>
     <div class="table-wrap">
@@ -161,10 +88,10 @@
 <div id="psec_recent_orders" class="port-sec" style="display:none;">
   <div class="card">
     <div class="card-head">
-      <div><h2 class="card-title">Recent Orders (Descending Time &amp; Sortable)</h2><div class="muted">Click any column header to sort.</div></div>
+      <div><h2 class="card-title">Recent Orders</h2><div class="muted">Sorted descending by time; click any column header to sort.</div></div>
       <input id="recOrdFilter" placeholder="Filter recent orders..." oninput="renderRecentOrders()" style="width:220px;">
     </div>
-    <div class="table-wrap" style="max-height:380px;">
+    <div class="table-wrap" style="max-height:420px;">
       <table>
         <thead>
           <tr>
@@ -185,16 +112,36 @@
   </div>
 </div>
 
+<div id="psec_closed_trades" class="port-sec" style="display:none;">
+  <div class="card">
+    <div class="card-head">
+      <div><h2 class="card-title">Closed Trades &amp; Campaign R</h2><div class="muted">Filter by date range or symbol for large trade history.</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <input id="cl_sym" placeholder="Symbol..." oninput="renderClosedTrades()" style="width:120px;">
+        <input id="cl_from" type="date" onchange="renderClosedTrades()" style="width:140px;">
+        <input id="cl_to" type="date" onchange="renderClosedTrades()" style="width:140px;">
+        <button type="button" class="btn" onclick="document.getElementById('cl_sym').value='';document.getElementById('cl_from').value='';document.getElementById('cl_to').value='';renderClosedTrades()">Clear</button>
+      </div>
+    </div>
+    <div class="table-wrap" style="max-height:440px;">
+      <table>
+        <thead><tr><th style="width:28px;">👁</th><th class="left">ID</th><th class="left">Symbol</th><th class="left">Side</th><th>Qty</th><th>Avg Entry</th><th>Avg Exit</th><th>% Chg</th><th>Charges (₹)</th><th>Risk (₹)</th><th>Net P&amp;L (₹)</th><th>Final R</th><th class="left">Closed At</th></tr></thead>
+        <tbody id="closedRows"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <div id="psec_alerts" class="port-sec" style="display:none;">
   <div class="card">
     <div class="card-head">
-      <div><h2 class="card-title">Telegram Price Alerts</h2><div class="muted">Checked every 10s by the watchdog; automatically closes once triggered &amp; sent.</div></div>
+      <div><h2 class="card-title">Telegram Price Alerts</h2><div class="muted">Checked every 10s; automatically closes once triggered &amp; sent.</div></div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
-      <input id="al_sym" value="RELIANCE" style="width:120px;" placeholder="Symbol">
+      <input id="al_sym" value="RELIANCE" list="nseSymbolList" style="width:130px;" placeholder="Symbol">
       <select id="al_cond" style="width:85px;"><option value=">=">&ge;</option><option value="<=">&le;</option></select>
       <input id="al_px" type="number" step="0.05" placeholder="Target ₹" style="width:110px;">
-      <input id="al_msg" placeholder="Alert message (e.g. Breakout above resistance)" style="flex:1;min-width:200px;">
+      <input id="al_msg" placeholder="Alert message" style="flex:1;min-width:200px;">
       <button type="button" class="btn primary" onclick="addPriceAlert()">Add Alert</button>
     </div>
     <div id="alertsList" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
@@ -209,7 +156,7 @@
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
         <select id="fnd_kind" style="width:130px;"><option value="DEPOSIT">Add Funds (+)</option><option value="WITHDRAW">Withdraw (-)</option></select>
         <input id="fnd_amt" type="number" step="100" placeholder="Amount ₹" style="width:130px;">
-        <input id="fnd_note" placeholder="Note (e.g. UPI Topup)" style="flex:1;min-width:140px;">
+        <input id="fnd_note" placeholder="Note" style="flex:1;min-width:140px;">
         <button type="button" class="btn primary" onclick="submitFundTxn()">Submit</button>
       </div>
       <div class="table-wrap" style="max-height:240px;">
@@ -231,32 +178,104 @@
   </div>
 </div>
 
+<datalist id="nseSymbolList"></datalist>
+
+<button type="button" class="fab-order" onclick="openOrderModal()">+ Place Order</button>
+
+<div id="orderModal" class="modal">
+  <div class="modal-card" style="max-width:740px;">
+    <div class="card-head">
+      <div><h3 class="card-title">Quick Execution Ticket (5s Limit Chase + Auto-SL)</h3><div class="muted">Symbol autocomplete includes NSE equities &amp; new IPOs.</div></div>
+      <div style="display:flex;gap:6px;">
+        <button type="button" class="btn" onclick="syncNseSymbols()">↻ Sync IPOs</button>
+        <button type="button" class="btn" onclick="closeOrderModal()">Close (Esc)</button>
+      </div>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label>Symbol</label><input id="ord_symbol" value="RELIANCE" list="nseSymbolList" placeholder="Type symbol..."></div>
+      <div class="field"><label>Side</label><select id="ord_side" onchange="recalcOrderTicket()"><option value="BUY">BUY (Long)</option><option value="SELL">SELL (Short - MIS)</option></select></div>
+      <div class="field"><label>Product</label><select id="ord_product"><option value="MIS">MIS (Intraday)</option><option value="CNC">CNC (Delivery)</option></select></div>
+      <div class="field"><label>% Capital Invest</label><input id="ord_cap_pct" type="number" step="0.5" value="5" oninput="recalcOrderTicket()"></div>
+      <div class="field"><label>Limit Price (₹)</label><input id="ord_price" type="number" step="0.05" value="2950" oninput="recalcOrderTicket()"></div>
+      <div class="field">
+        <label style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Stop Loss</span>
+          <span>
+            <button type="button" id="slModePxBtn" class="btn primary" style="padding:1px 6px;font-size:10.5px;" onclick="setSlMode('px')">₹</button>
+            <button type="button" id="slModePctBtn" class="btn" style="padding:1px 6px;font-size:10.5px;" onclick="setSlMode('pct')">%</button>
+          </span>
+        </label>
+        <input id="ord_sl" type="number" step="0.05" value="2930" oninput="recalcOrderTicket()">
+        <span id="slResolvedLbl" class="muted" style="font-size:11px;"></span>
+      </div>
+      <div class="field"><label>Target Price (₹)</label><input id="ord_target" type="number" step="0.05" value="3010" oninput="recalcOrderTicket()"></div>
+      <div class="field"><label>Quantity (Shares)</label><input id="ord_qty" type="number" value="16" oninput="recalcOrderTicket()"></div>
+    </div>
+
+    <div id="ordRiskBar" style="margin-top:10px;padding:8px 12px;border-radius:8px;background:var(--card-alt);border:1px solid var(--border);font-size:12.5px;display:flex;gap:16px;flex-wrap:wrap;"></div>
+
+    <div style="margin-top:10px;border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--card-alt);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+        <b style="font-size:12.5px;">Dynamic Partial Target Exits</b>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <label class="muted" style="font-size:11.5px;"><input type="checkbox" id="ord_be_after_t1" checked> Move SL to Breakeven after T1</label>
+          <button type="button" class="btn" style="padding:3px 9px;font-size:11.5px;" onclick="addTargetLeg()">+ Add Target</button>
+        </div>
+      </div>
+      <div id="targetLegsBox" style="display:grid;gap:6px;"></div>
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;">
+      <button type="button" class="btn primary" onclick="submitSmartOrder()">Place Smart Order + Auto-SL</button>
+      <span id="ord_msg" class="muted"></span>
+    </div>
+
+    <hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <span class="muted" style="font-size:12px;">Paper LTP Tester:</span>
+      <input id="tick_sym" value="RELIANCE" list="nseSymbolList" style="width:120px;">
+      <input id="tick_ltp" type="number" step="0.05" value="2950" style="width:110px;">
+      <button type="button" class="btn" onclick="sendPaperTick()">Update Paper LTP</button>
+    </div>
+  </div>
+</div>
+
 <div id="liveTradeModal" class="modal">
-  <div class="modal-card" style="max-width:820px;">
+  <div class="modal-card" style="max-width:840px;">
     <div class="card-head">
       <div><h3 id="ltModalTitle" class="card-title">Trade Log</h3><div id="ltModalSub" class="muted"></div></div>
       <button type="button" class="btn" onclick="closeLiveTradeModal()">Close (Esc)</button>
     </div>
     <div class="kpi-grid" id="ltModalKpis" style="margin-bottom:10px;"></div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th class="left">Time</th><th class="left">Action</th><th class="left">Side</th><th>Qty</th><th>Price (₹)</th><th>Realized P&amp;L (₹)</th></tr></thead>
-        <tbody id="ltFillRows"></tbody>
-      </table>
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+      <button type="button" id="ltTabOrdersBtn" class="btn primary" onclick="showTradeModalTab('orders')">Order History</button>
+      <button type="button" id="ltTabCommentsBtn" class="btn" onclick="showTradeModalTab('comments')">Comments &amp; Screenshots</button>
     </div>
-    <hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">
-    <h4 style="margin:0 0 8px;">Trade Journal &amp; Setup Screenshots (Paste Ctrl+V or Upload)</h4>
-    <div id="jrnPasteZone" style="display:grid;gap:8px;">
-      <textarea id="jrn_comment" rows="2" placeholder="Write setup notes or press Ctrl+V here to paste a screenshot from clipboard..."></textarea>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <input type="file" id="jrn_file" accept="image/*" onchange="previewJournalFile(this)">
-        <button type="button" class="btn primary" onclick="saveTradeJournal()">Save Comment / Screenshot</button>
-        <span id="jrn_img_status" class="muted"></span>
+    <div id="ltSecOrders">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th class="left">Time</th><th class="left">Action</th><th class="left">Side</th><th>Qty</th><th>Price (₹)</th><th>Realized P&amp;L (₹)</th></tr></thead>
+          <tbody id="ltFillRows"></tbody>
+        </table>
       </div>
-      <img id="jrn_preview" class="journal-img-thumb" style="display:none;">
     </div>
-    <div id="jrnEntries" style="display:grid;gap:8px;margin-top:10px;"></div>
+    <div id="ltSecComments" style="display:none;">
+      <div id="jrnPasteZone" style="display:grid;gap:8px;">
+        <textarea id="jrn_comment" rows="2" placeholder="Write setup notes or press Ctrl+V here to paste a screenshot..."></textarea>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="file" id="jrn_file" accept="image/*" onchange="previewJournalFile(this)">
+          <button type="button" class="btn primary" onclick="saveTradeJournal()">Save Comment / Screenshot</button>
+          <span id="jrn_img_status" class="muted"></span>
+        </div>
+        <img id="jrn_preview" class="journal-img-thumb" style="display:none;">
+      </div>
+      <div id="jrnEntries" style="display:grid;gap:8px;margin-top:10px;"></div>
+    </div>
   </div>
+</div>
+
+<div id="imgLightbox" class="lightbox" onclick="this.classList.remove('open')">
+  <img id="imgLightboxImg" src="" alt="Screenshot Preview">
 </div>
 {% endblock %}
 {% block scripts %}<script src="/static/js/portfolio.js"></script>{% endblock %}

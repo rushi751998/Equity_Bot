@@ -1,24 +1,16 @@
 {% extends "base.html" %}
-{% block title %}Settings (.env, Brokers, PyOTP, Telegram, MongoDB) — tfalgo{% endblock %}
+{% block title %}Settings (.env, Brokers, PyOTP, Telegram, MongoDB, Themes) — tfalgo{% endblock %}
 {% block content %}
 <div class="card">
   <div class="card-head">
-    <div>
-      <h2 class="card-title">Execution, Broker &amp; Persistence Settings (.env)</h2>
-      <div class="muted">Credentials save directly into <code>.env</code>. Sensitive audit logs &amp; state sync to MongoDB when configured.</div>
+    <div><h2 class="card-title">Execution, Broker &amp; MongoDB Settings (.env)</h2><div class="muted">Save settings to <code>.env</code> and auto-create MongoDB database &amp; collections.</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button type="button" class="btn" onclick="testMongoInit()">Test &amp; Init MongoDB</button>
+      <button type="button" class="btn primary" onclick="saveAllSettings()">Save All Settings</button>
     </div>
-    <button type="button" class="btn primary" onclick="saveAllSettings()">Save All Settings</button>
   </div>
-
   <div class="form-grid">
-    <div class="field"><label>Active Broker</label>
-      <select id="st_active_broker">
-        <option value="paper">Paper Trading (Built-in)</option>
-        <option value="zerodha">Zerodha Kite</option>
-        <option value="fyers">Fyers</option>
-        <option value="kotak_neo">Kotak Neo</option>
-      </select>
-    </div>
+    <div class="field"><label>Active Broker</label><select id="st_active_broker"><option value="paper">Paper Trading</option><option value="zerodha">Zerodha Kite v3</option><option value="fyers">Fyers</option><option value="kotak_neo">Kotak Neo</option></select></div>
     <div class="field"><label>Broker Sync Interval (sec)</label><input id="st_sync_sec" type="number" value="10"></div>
     <div class="field"><label>Limit Chase Interval (sec)</label><input id="st_chase_sec" type="number" value="5"></div>
     <div class="field"><label>Chase Max Retries</label><input id="st_chase_retries" type="number" value="2"></div>
@@ -26,63 +18,86 @@
     <div class="field"><label>After Retries → Market?</label><select id="st_direct_mkt"><option value="1">Yes (Force Market)</option><option value="0">No (Cancel)</option></select></div>
     <div class="field"><label>Auto Re-Place Missing SL?</label><select id="st_auto_sl"><option value="1">Yes (SL Watchdog)</option><option value="0">Alert Only</option></select></div>
     <div class="field"><label>Paper Capital (₹)</label><input id="st_paper_cap" type="number" value="1000000"></div>
-    <div class="field" style="grid-column:span 2;"><label>MongoDB URI (optional, for long-term trade/audit storage)</label><input id="st_mongo_uri" placeholder="mongodb+srv://..."></div>
+    <div class="field" style="grid-column:span 2;"><label>MongoDB URI</label><input id="st_mongo_uri" placeholder="mongodb://127.0.0.1:27017 or mongodb+srv://..."></div>
     <div class="field"><label>MongoDB Database</label><input id="st_mongo_db" value="tfalgo_live"></div>
+  </div>
+  <div id="mongoStatusMsg" class="muted" style="margin-top:8px;"></div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div><h3 class="card-title">Dark Mode Theme Presets &amp; Custom Colors</h3><div class="muted">Pick a built-in dark theme or customize hex colors for long hours.</div></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <button type="button" class="btn" onclick="applyPresetTheme('midnight')">Midnight Navy</button>
+      <button type="button" class="btn" onclick="applyPresetTheme('oled')">OLED Black</button>
+      <button type="button" class="btn" onclick="applyPresetTheme('charcoal')">Slate Charcoal</button>
+      <button type="button" class="btn" onclick="applyPresetTheme('emerald')">Emerald Terminal</button>
+    </div>
+  </div>
+  <div class="form-grid">
+    <div class="field"><label>Background Color</label><input id="th_bg" type="color" value="#0b1120" oninput="previewCustomTheme()"></div>
+    <div class="field"><label>Card Surface Color</label><input id="th_card" type="color" value="#111827" oninput="previewCustomTheme()"></div>
+    <div class="field"><label>Primary Accent Color</label><input id="th_primary" type="color" value="#2563eb" oninput="previewCustomTheme()"></div>
   </div>
 </div>
 
 <div class="grid-2">
   <div class="card">
     <div class="card-head">
-      <div><h3 class="card-title">PyOTP 2FA Authenticator Setup</h3><div class="muted">Generate &amp; verify 6-digit TOTP for auto-login.</div></div>
+      <div><h3 class="card-title">PyOTP 2FA Setup &amp; Broker Guides</h3></div>
       <button type="button" class="btn" onclick="generatePyotp()">Generate Secret</button>
     </div>
     <div class="form-grid">
       <div class="field" style="grid-column:span 2;"><label>TOTP Base32 Secret</label><input id="pyotp_secret" placeholder="Paste or click Generate"></div>
       <div class="field"><label>Current 6-Digit Code</label><input id="pyotp_now" readonly></div>
-      <div class="field"><label>Verify Code</label>
-        <div style="display:flex;gap:6px;"><input id="pyotp_check" placeholder="123456"><button type="button" class="btn primary" onclick="verifyPyotp()">Verify</button></div>
-      </div>
+      <div class="field"><label>Verify Code</label><div style="display:flex;gap:6px;"><input id="pyotp_check" placeholder="123456"><button type="button" class="btn primary" onclick="verifyPyotp()">Verify</button></div></div>
     </div>
     <div id="pyotp_uri" class="muted" style="margin-top:8px;word-break:break-all;"></div>
+    <div style="margin-top:10px;display:grid;gap:6px;font-size:12px;">
+      <details><summary style="cursor:pointer;font-weight:700;">Zerodha Kite PyOTP Guide</summary><div class="muted" style="padding:4px 0;">Kite Web → My Profile → Password &amp; Security → Enable External TOTP → Click "Can't scan?" → Copy the 32-char Base32 key into <b>Zerodha TOTP Secret</b>.</div></details>
+      <details><summary style="cursor:pointer;font-weight:700;">Fyers PyOTP Guide</summary><div class="muted" style="padding:4px 0;">Fyers Web → My Account → Security → External TOTP Authenticator → Copy the Base32 secret key into <b>Fyers TOTP Secret</b>.</div></details>
+      <details><summary style="cursor:pointer;font-weight:700;">Kotak Neo PyOTP Guide</summary><div class="muted" style="padding:4px 0;">Kotak Neo Portal → Security / 2FA Settings → Link Authenticator App → Copy the Base32 setup key into <b>Kotak Neo TOTP Secret</b>.</div></details>
+    </div>
   </div>
 
   <div class="card">
-    <div class="card-head">
-      <div><h3 class="card-title">Multi-Bot Telegram Alerts</h3><div class="muted">Remote notifications on EC2 for SL breach, fills &amp; errors.</div></div>
-      <button type="button" class="btn" onclick="testTelegram()">Test Telegram</button>
-    </div>
+    <div class="card-head"><div><h3 class="card-title">Multi-Bot Telegram Alerts (Test Individually)</h3><div class="muted">Test each bot separately with a custom message.</div></div></div>
     <div id="tgBotsContainer" style="display:grid;gap:10px;"></div>
   </div>
 </div>
 
 <div class="card">
-  <div class="card-head">
-    <div><h3 class="card-title">Broker API Credentials (.env)</h3><div class="muted">Configure each broker independently in its own card.</div></div>
-  </div>
+  <div class="card-head"><div><h3 class="card-title">Broker API Credentials (.env) &amp; Zerodha Kite v3 OAuth</h3></div></div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;">
-    <div style="border:1px solid var(--border);border-radius:10px;padding:14px;background:var(--card-alt);display:grid;gap:10px;">
-      <div style="font-weight:700;font-size:14px;">Zerodha Kite</div>
-      <div class="field"><label>API Key</label><input id="br_z_key" type="password" placeholder="API Key"></div>
-      <div class="field"><label>API Secret</label><input id="br_z_sec" type="password" placeholder="API Secret"></div>
-      <div class="field"><label>TOTP Secret</label><input id="br_z_totp" type="password" placeholder="PyOTP Base32"></div>
-      <div class="field"><label>Access Token</label><input id="br_z_tok" type="password" placeholder="Daily Access Token"></div>
+    <div style="border:1px solid var(--border);border-radius:10px;padding:14px;background:var(--card-alt);display:grid;gap:8px;">
+      <div style="font-weight:700;font-size:14px;">Zerodha Kite Connect v3</div>
+      <div class="field"><label>API Key</label><input id="br_z_key" type="password"></div>
+      <div class="field"><label>API Secret</label><input id="br_z_sec" type="password"></div>
+      <div class="field"><label>TOTP Secret</label><input id="br_z_totp" type="password"></div>
+      <div class="field"><label>Access Token</label><input id="br_z_tok" type="password"></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+        <button type="button" class="btn" onclick="openKiteLogin()">1. Generate Login URL</button>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:4px;">
+        <input id="br_z_req_tok" placeholder="Paste request_token from redirect">
+        <button type="button" class="btn primary" onclick="exchangeKiteToken()">2. Exchange</button>
+      </div>
     </div>
 
-    <div style="border:1px solid var(--border);border-radius:10px;padding:14px;background:var(--card-alt);display:grid;gap:10px;">
+    <div style="border:1px solid var(--border);border-radius:10px;padding:14px;background:var(--card-alt);display:grid;gap:8px;">
       <div style="font-weight:700;font-size:14px;">Fyers</div>
-      <div class="field"><label>App ID</label><input id="br_f_id" type="password" placeholder="App ID"></div>
-      <div class="field"><label>Secret Key</label><input id="br_f_sec" type="password" placeholder="Secret Key"></div>
-      <div class="field"><label>TOTP Secret</label><input id="br_f_totp" type="password" placeholder="PyOTP Base32"></div>
-      <div class="field"><label>Access Token</label><input id="br_f_tok" type="password" placeholder="Access Token"></div>
+      <div class="field"><label>App ID</label><input id="br_f_id" type="password"></div>
+      <div class="field"><label>Secret Key</label><input id="br_f_sec" type="password"></div>
+      <div class="field"><label>TOTP Secret</label><input id="br_f_totp" type="password"></div>
+      <div class="field"><label>Access Token</label><input id="br_f_tok" type="password"></div>
     </div>
 
-    <div style="border:1px solid var(--border);border-radius:10px;padding:14px;background:var(--card-alt);display:grid;gap:10px;">
+    <div style="border:1px solid var(--border);border-radius:10px;padding:14px;background:var(--card-alt);display:grid;gap:8px;">
       <div style="font-weight:700;font-size:14px;">Kotak Neo</div>
-      <div class="field"><label>Consumer Key</label><input id="br_k_key" type="password" placeholder="Consumer Key"></div>
-      <div class="field"><label>Consumer Secret</label><input id="br_k_sec" type="password" placeholder="Consumer Secret"></div>
-      <div class="field"><label>TOTP Secret</label><input id="br_k_totp" type="password" placeholder="PyOTP Base32"></div>
-      <div class="field"><label>Access Token</label><input id="br_k_tok" type="password" placeholder="Session Token"></div>
+      <div class="field"><label>Consumer Key</label><input id="br_k_key" type="password"></div>
+      <div class="field"><label>Consumer Secret</label><input id="br_k_sec" type="password"></div>
+      <div class="field"><label>TOTP Secret</label><input id="br_k_totp" type="password"></div>
+      <div class="field"><label>Access Token</label><input id="br_k_tok" type="password"></div>
     </div>
   </div>
   <div id="st_save_msg" class="muted" style="margin-top:12px;"></div>

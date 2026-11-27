@@ -16,7 +16,6 @@ def _tpl(request: Request) -> Jinja2Templates:
 def root():
     return RedirectResponse(url="/portfolio")
 
-
 @router.get("/portfolio", response_class=HTMLResponse)
 def page_portfolio(request: Request):
     return _tpl(request).TemplateResponse(request, "portfolio.html", {"active_nav": "portfolio"})

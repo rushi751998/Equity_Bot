@@ -6,12 +6,26 @@ function isDarkMode() {
   return document.documentElement.classList.contains("tf-dark");
 }
 
+function applyCustomThemeColors(tc) {
+  if (!tc || !isDarkMode()) return;
+  const r = document.documentElement.style;
+  if (tc.bg) r.setProperty("--bg", tc.bg);
+  if (tc.card) r.setProperty("--card", tc.card);
+  if (tc.primary) r.setProperty("--primary", tc.primary);
+}
+window.applyCustomThemeColors = applyCustomThemeColors;
+
 function toggleTheme() {
   const dark = !isDarkMode();
   document.documentElement.classList.toggle("tf-dark", dark);
   localStorage.setItem(STORAGE_KEY_THEME, dark ? "dark" : "light");
   const btn = document.getElementById("themeToggleBtn");
   if (btn) btn.textContent = dark ? "☀️ Light" : "🌙 Dark";
+  if (!dark) {
+    ["--bg", "--card", "--primary"].forEach(k => document.documentElement.style.removeProperty(k));
+  } else {
+    try { applyCustomThemeColors(JSON.parse(localStorage.getItem("tfalgo_theme_colors_v1") || "null")); } catch {}
+  }
   if (typeof window.onThemeChanged === "function") window.onThemeChanged();
 }
 

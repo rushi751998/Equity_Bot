@@ -6,7 +6,18 @@
   <title>{% block title %}tfalgo Quant Workstation{% endblock %}</title>
   <link rel="stylesheet" href="/static/css/app.css">
   <script>
-    if (localStorage.getItem("tfalgo_theme_v1") === "dark") document.documentElement.classList.add("tf-dark");
+    if (localStorage.getItem("tfalgo_theme_v1") !== "light") {
+      document.documentElement.classList.add("tf-dark");
+      try {
+        const tc = JSON.parse(localStorage.getItem("tfalgo_theme_colors_v1") || "null");
+        if (tc) {
+          const r = document.documentElement.style;
+          if (tc.bg) r.setProperty("--bg", tc.bg);
+          if (tc.card) r.setProperty("--card", tc.card);
+          if (tc.primary) r.setProperty("--primary", tc.primary);
+        }
+      } catch {}
+    }
   </script>
 </head>
 <body>

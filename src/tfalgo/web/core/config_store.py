@@ -11,6 +11,17 @@ ENV_PATH = Path(".env")
 LOCAL_STATE_PATH = Path("data/live_state.json")
 AUDIT_LOG_PATH = Path("reports/live_audit.log")
 
+REQUIRED_COLLECTIONS = [
+    "live_state",
+    "audit_logs",
+    "trade_journal",
+    "price_alerts",
+    "funds_history",
+    "closed_trades",
+    "equity_snapshots",
+    "settings",
+]
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     "active_broker": "paper",
     "sync_interval_sec": 10,
@@ -24,8 +35,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "paper_capital": 1_000_000.0,
     "mongo_uri": "",
     "mongo_db": "tfalgo_live",
+    "theme_preset": "midnight",
+    "theme_colors": {
+        "bg": "#0b1120",
+        "card": "#111827",
+        "primary": "#2563eb",
+        "green": "#4ade80",
+        "red": "#f87171",
+    },
     "telegram_bots": [
-        {"name": "Critical SL & Errors", "token": "", "chat_id": "", "events": ["sl_breach", "sl_missing", "error"]},
+        {"name": "Critical SL & Errors", "token": "", "chat_id": "", "events": ["sl_breach", "sl_missing", "error", "price_alert"]},
         {"name": "Fills & EOD Summary", "token": "", "chat_id": "", "events": ["fill", "eod", "health"]},
     ],
     "brokers": {
@@ -74,15 +93,12 @@ def load_settings() -> dict[str, Any]:
                     cfg[k] = v
         except Exception:
             pass
-    # Overlay direct .env keys
     if env.get("MONGO_URI"):
         cfg["mongo_uri"] = env["MONGO_URI"]
     if env.get("ZERODHA_API_KEY"):
         cfg["brokers"]["zerodha"]["api_key"] = env["ZERODHA_API_KEY"]
-    if env.get("FYERS_APP_ID"):
-        cfg["brokers"]["fyers"]["app_id"] = env["FYERS_APP_ID"]
-    if env.get("KOTAK_CONSUMER_KEY"):
-        cfg["brokers"]["kotak_neo"]["consumer_key"] = env["KOTAK_CONSUMER_KEY"]
+    if env.get("ZERODHA_ACCESS_TOKEN"):
+        cfg["brokers"]["zerodha"]["access_token"] = env["ZERODHA_ACCESS_TOKEN"]
     return cfg
 
 
@@ -100,6 +116,7 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
         "ZERODHA_API_KEY": cur["brokers"]["zerodha"].get("api_key", ""),
         "ZERODHA_API_SECRET": cur["brokers"]["zerodha"].get("api_secret", ""),
         "ZERODHA_TOTP_SECRET": cur["brokers"]["zerodha"].get("totp_secret", ""),
+        "ZERODHA_ACCESS_TOKEN": cur["brokers"]["zerodha"].get("access_token", ""),
         "FYERS_APP_ID": cur["brokers"]["fyers"].get("app_id", ""),
         "FYERS_TOTP_SECRET": cur["brokers"]["fyers"].get("totp_secret", ""),
         "KOTAK_CONSUMER_KEY": cur["brokers"]["kotak_neo"].get("consumer_key", ""),
@@ -123,7 +140,6 @@ def generate_totp_secret() -> str:
 
 
 def current_totp_code(secret: str) -> tuple[str, str]:
-    """Return (6-digit code, provisioning_uri)."""
     if not secret:
         return "", ""
     try:
@@ -145,25 +161,48 @@ def verify_totp_code(secret: str, code: str) -> bool:
 
 
 class PersistenceStore:
-    """Dual MongoDB (when MONGO_URI configured & pymongo installed) + local JSON/log store."""
-
     def __init__(self) -> None:
         self._client = None
         self._db = None
+        self._uri = ""
 
     def _get_db(self):
         cfg = load_settings()
-        uri = cfg.get("mongo_uri") or os.environ.get("MONGO_URI", "")
+        uri = (cfg.get("mongo_uri") or os.environ.get("MONGO_URI", "")).strip()
         if not uri:
             return None
         try:
             from pymongo import MongoClient
-            if self._client is None:
-                self._client = MongoClient(uri, serverSelectionTimeoutMS=2500)
-                self._db = self._client[cfg.get("mongo_db", "tfalgo_live")]
+            if self._client is None or self._uri != uri:
+                self._client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+                self._uri = uri
+            self._db = self._client[cfg.get("mongo_db", "tfalgo_live")]
             return self._db
         except Exception:
             return None
+
+    def ensure_mongo_schema(self, uri_override: str = "", db_override: str = "") -> dict[str, Any]:
+        """Connect to MongoDB and auto-create database + required collections."""
+        cfg = load_settings()
+        uri = (uri_override or cfg.get("mongo_uri") or os.environ.get("MONGO_URI", "")).strip()
+        db_name = (db_override or cfg.get("mongo_db") or "tfalgo_live").strip()
+        if not uri:
+            return {"ok": False, "error": "MongoDB URI is empty."}
+        try:
+            from pymongo import MongoClient
+            client = MongoClient(uri, serverSelectionTimeoutMS=3500)
+            client.admin.command("ping")
+            db = client[db_name]
+            existing = set(db.list_collection_names())
+            created = []
+            for col in REQUIRED_COLLECTIONS:
+                if col not in existing:
+                    db.create_collection(col)
+                    created.append(col)
+            db.settings.update_one({"_id": "init"}, {"$set": {"initialized_at": datetime.utcnow()}}, upsert=True)
+            return {"ok": True, "db": db_name, "created": created, "collections": sorted(db.list_collection_names())}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
     def save_live_state(self, state: dict[str, Any]) -> None:
         LOCAL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)

@@ -231,6 +231,32 @@ class ExecutionManager:
             except Exception:
                 pass
 
+
+        # Record daily equity snapshot automatically (for Account P&L, Capital Used & DD charts)
+        try:
+            import json as _json2
+            snap_p = __import__("pathlib").Path("data/equity_snapshots.json")
+            snaps = _json2.loads(snap_p.read_text(encoding="utf-8")) if snap_p.exists() else []
+            today_s = datetime.now().strftime("%Y-%m-%d")
+            closed_t = getattr(broker, "closed_trades", [])
+            realized = sum(float(t.get("net_pnl", 0.0)) for t in closed_t)
+            mtm = sum(float(p.get("mtm", 0.0)) for p in positions)
+            used_cap = sum(abs(int(p.get("net_qty", 0))) * float(p.get("avg_price", 0)) for p in positions)
+            cap = float(cfg.get("paper_capital", 1_000_000.0))
+            eq_val = round(cap + realized + mtm, 2)
+            rec = {"date": today_s, "equity": eq_val, "capital_used": round(used_cap, 2), "capital": cap}
+            if snaps and snaps[-1].get("date") == today_s:
+                snaps[-1] = rec
+            else:
+                snaps.append(rec)
+            snap_p.parent.mkdir(parents=True, exist_ok=True)
+            snap_p.write_text(_json2.dumps(snaps[-1000:]), encoding="utf-8")
+            db = STORE._get_db()
+            if db is not None:
+                db.equity_snapshots.update_one({"date": today_s}, {"$set": rec}, upsert=True)
+        except Exception:
+            pass
+
         self.last_sync_ts = datetime.now().strftime("%H:%M:%S")
         return {"positions": positions, "orders": orders, "last_sync_ts": self.last_sync_ts}
 
