@@ -51,18 +51,27 @@ def get_portfolio_state() -> dict[str, Any]:
 
 @router.post("/order")
 def place_portfolio_order(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    symbol = str(body.get("symbol", "")).strip().upper()
+    from tfalgo.web.core.brokers import split_exchange_symbol
+    raw_sym = str(body.get("symbol", "")).strip().upper()
+    req_exch = str(body.get("exchange", "NSE")).strip().upper()
+    exch, sym = split_exchange_symbol(raw_sym, default_exch=req_exch if req_exch in ("NSE", "BSE") else "NSE")
     side = str(body.get("side", "BUY")).strip().upper()
     product = str(body.get("product", "MIS")).strip().upper()
     qty = int(body.get("qty", 0))
     limit_price = float(body.get("limit_price", 0.0))
     sl_price = float(body.get("sl_price", 0.0))
     target_price = float(body["target_price"]) if body.get("target_price") else None
-    if not symbol or qty <= 0 or limit_price <= 0 or sl_price <= 0:
+    if not sym or qty <= 0 or limit_price <= 0 or sl_price <= 0:
         return {"ok": False, "error": "Symbol, Qty, Limit Price, and SL Price are required."}
+    master = _load_instruments_master()
+    if master:
+        ex_set = set(master.get(exch, []))
+        if ex_set and sym not in ex_set:
+            return {"ok": False, "error": f"Invalid symbol '{sym}' on {exch}. Check spelling or click Sync IPOs / Instruments."}
+    full_sym = f"{exch}:{sym}" if exch == "BSE" else sym
     targets = body.get("targets") or []
     move_be = bool(body.get("move_sl_be_after_t1", True))
-    return EXEC_MGR.place_smart_order(symbol, side, qty, product, limit_price, sl_price, target_price, targets=targets, move_sl_be_after_t1=move_be, account_id=body.get("account_id"))
+    return EXEC_MGR.place_smart_order(full_sym, side, qty, product, limit_price, sl_price, target_price, targets=targets, move_sl_be_after_t1=move_be, account_id=body.get("account_id"))
 
 
 @router.post("/exit")
@@ -363,7 +372,24 @@ def add_fund_txn(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 
 NSE_SYMBOLS_PATH = Path("data/nse_symbols.json")
+INSTRUMENTS_PATH = Path("data/instruments_master.json")
 EQUITY_SNAPS_PATH = Path("data/equity_snapshots.json")
+
+
+def _load_instruments_master() -> dict[str, list[str]]:
+    if INSTRUMENTS_PATH.exists():
+        try:
+            d = json.loads(INSTRUMENTS_PATH.read_text(encoding="utf-8"))
+            if isinstance(d, dict) and (d.get("NSE") or d.get("BSE")):
+                return {"NSE": d.get("NSE", []), "BSE": d.get("BSE", [])}
+        except Exception:
+            pass
+    if NSE_SYMBOLS_PATH.exists():
+        try:
+            return {"NSE": json.loads(NSE_SYMBOLS_PATH.read_text(encoding="utf-8")), "BSE": []}
+        except Exception:
+            pass
+    return {}
 
 
 @router.get("/symbols")
@@ -371,42 +397,72 @@ def get_autocomplete_symbols(request: Request) -> dict[str, Any]:
     from tfalgo.config import load_config
     from tfalgo.factory import build_store
 
-    syms: set[str] = set()
+    master = _load_instruments_master()
+    nse_syms: set[str] = set(master.get("NSE", []))
+    bse_syms: set[str] = set(master.get("BSE", []))
     try:
         cfg = load_config(request.app.state.default_config)
         store = build_store(cfg)
-        syms.update(s for s in store.list_symbols(cfg.run.base_timeframe) if not s.startswith("idx:"))
+        nse_syms.update(s for s in store.list_symbols(cfg.run.base_timeframe) if not s.startswith("idx:"))
     except Exception:
         pass
-    if NSE_SYMBOLS_PATH.exists():
-        try:
-            syms.update(json.loads(NSE_SYMBOLS_PATH.read_text(encoding="utf-8")))
-        except Exception:
-            pass
-    if not syms:
-        syms.update(["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "TATAMOTORS", "BAJFINANCE"])
-    return {"ok": True, "symbols": sorted(syms)}
+    if not nse_syms and not bse_syms:
+        nse_syms.update(["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "TATAMOTORS", "BAJFINANCE"])
+    return {"ok": True, "symbols": sorted(nse_syms), "nse": sorted(nse_syms), "bse": sorted(bse_syms), "synced": bool(master)}
+
+
+@router.get("/validate_symbol")
+def validate_symbol_endpoint(symbol: str = "", exchange: str = "NSE") -> dict[str, Any]:
+    from tfalgo.web.core.brokers import split_exchange_symbol
+    exch, sym = split_exchange_symbol(symbol, default_exch=exchange or "NSE")
+    master = _load_instruments_master()
+    if not master:
+        return {"ok": True, "valid": bool(sym), "symbol": sym, "exchange": exch, "synced": False}
+    ex_set = set(master.get(exch, []))
+    return {"ok": True, "valid": sym in ex_set, "symbol": sym, "exchange": exch, "synced": True}
 
 
 @router.post("/symbols/sync")
 def sync_nse_ipo_symbols() -> dict[str, Any]:
-    """Fetch latest NSE equity & newly listed IPO symbols from NSE public EQUITY_L.csv."""
+    """Fetch combined NSE & BSE equities/IPOs from Kite /instruments CSV, with NSE EQUITY_L.csv fallback."""
     import csv
     import io
     import urllib.request
 
-    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    nse_set: set[str] = set()
+    bse_set: set[str] = set()
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        req = urllib.request.Request("https://api.kite.trade/instruments", headers={"User-Agent": "Mozilla/5.0", "X-Kite-Version": "3"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
             text = resp.read().decode("utf-8", errors="ignore")
-        reader = csv.DictReader(io.StringIO(text))
-        syms = sorted({row["SYMBOL"].strip().upper() for row in reader if row.get("SYMBOL")})
-        NSE_SYMBOLS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        NSE_SYMBOLS_PATH.write_text(json.dumps(syms), encoding="utf-8")
-        return {"ok": True, "count": len(syms)}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        for row in csv.DictReader(io.StringIO(text)):
+            ex = (row.get("exchange") or "").strip().upper()
+            itype = (row.get("instrument_type") or "").strip().upper()
+            tsym = (row.get("tradingsymbol") or "").strip().upper()
+            if itype == "EQ" and tsym:
+                if ex == "NSE":
+                    nse_set.add(tsym)
+                elif ex == "BSE":
+                    bse_set.add(tsym)
+    except Exception:
+        pass
+
+    if not nse_set:
+        try:
+            req = urllib.request.Request("https://archives.nseindia.com/content/equities/EQUITY_L.csv", headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                text = resp.read().decode("utf-8", errors="ignore")
+            for row in csv.DictReader(io.StringIO(text)):
+                if row.get("SYMBOL"):
+                    nse_set.add(row["SYMBOL"].strip().upper())
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    master = {"NSE": sorted(nse_set), "BSE": sorted(bse_set)}
+    INSTRUMENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    INSTRUMENTS_PATH.write_text(json.dumps(master), encoding="utf-8")
+    NSE_SYMBOLS_PATH.write_text(json.dumps(master["NSE"]), encoding="utf-8")
+    return {"ok": True, "nse_count": len(master["NSE"]), "bse_count": len(master["BSE"]), "count": len(master["NSE"]) + len(master["BSE"])}
 
 
 @router.get("/snapshots")

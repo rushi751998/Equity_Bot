@@ -142,11 +142,24 @@ function resolveTargetLegs() {
   }).filter(x => x.qty > 0 && x.price > 0);
 }
 
+function exchBadge(o) {
+  const raw = String(o.symbol || "");
+  const ex = (o.exchange || (raw.startsWith("BSE:") ? "BSE" : "NSE")).toUpperCase();
+  const sym = raw.includes(":") ? raw.split(":")[1] : raw;
+  const col = ex === "BSE" ? "#f59e0b" : "#3b82f6";
+  return `<b>${sym}</b> <span style="font-size:10px;padding:1px 5px;border-radius:4px;background:${col}22;color:${col};border:1px solid ${col}55;vertical-align:middle;">${ex}</span>`;
+}
+
 async function submitSmartOrder() {
   const msg = document.getElementById("ord_msg");
+  if (!validateOrderSymbol()) {
+    if (msg) msg.textContent = "Error: Invalid symbol for selected exchange.";
+    return;
+  }
   const entry = parseFloat(document.getElementById("ord_price").value || "0");
   const side = document.getElementById("ord_side").value;
   const payload = {
+    exchange: document.getElementById("ord_exchange")?.value || "NSE",
     symbol: document.getElementById("ord_symbol").value,
     side,
     product: document.getElementById("ord_product").value,
@@ -238,73 +251,44 @@ function renderPerformanceMetrics() {
   grid.innerHTML = items.map(([l, v]) => `<div class="kpi"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join("");
 }
 
-let PORT_CHART_TAB = "eq";
-
-function setPortChartTab(tab, btn) {
-  PORT_CHART_TAB = tab;
-  document.querySelectorAll(".pchart-tab").forEach(b => b.classList.remove("primary"));
-  if (btn) btn.classList.add("primary");
-  const cuWrap = document.getElementById("pCuUnitWrap");
-  if (cuWrap) cuWrap.style.display = tab === "cap" ? "inline-flex" : "none";
-  const titles = {
-    eq: "Account P&L (%) — Daily Snapshots",
-    cap: `Capital Used (${PORT_CU_UNIT === "pct" ? "%" : "₹"}) — Daily Snapshots`,
-    dd: "Drawdown (%) — Daily Snapshots",
-  };
-  const tEl = document.getElementById("portChartTitle");
-  if (tEl) tEl.textContent = titles[tab] || titles.eq;
-  renderPortfolioCharts();
-}
-
 function setPortCuUnit(u) {
   PORT_CU_UNIT = u;
   document.getElementById("pCuPctBtn").className = "btn" + (u === "pct" ? " primary" : "");
   document.getElementById("pCuInrBtn").className = "btn" + (u === "inr" ? " primary" : "");
-  const tEl = document.getElementById("portChartTitle");
-  if (tEl && PORT_CHART_TAB === "cap") tEl.textContent = `Capital Used (${u === "pct" ? "%" : "₹"}) — Daily Snapshots`;
   renderPortfolioCharts();
 }
 
 function renderPortfolioCharts() {
-  const svg = document.getElementById("portMainSvg");
-  if (!svg || !LAST_SNAPS.length) return;
+  const eqSvg = document.getElementById("portEqSvg"), capSvg = document.getElementById("portCapSvg"), ddSvg = document.getElementById("portDdSvg");
+  if (!eqSvg || !capSvg || !ddSvg || !LAST_SNAPS.length) return;
   const pts = LAST_SNAPS;
   const dates = pts.map(x => x.date);
+  const retPct = pts.map(x => (x.capital > 0 ? ((x.equity / x.capital) - 1) * 100 : 0));
+  const capVals = pts.map(x => (PORT_CU_UNIT === "pct" ? (x.capital > 0 ? (x.capital_used / x.capital) * 100 : 0) : x.capital_used));
+  let pk = pts[0].equity || pts[0].capital || 1;
+  const ddPct = pts.map(x => { if (x.equity > pk) pk = x.equity; return pk > 0 ? ((x.equity - pk) / pk) * 100 : 0; });
 
-  let vals, col, suffix, fillCol;
-  if (PORT_CHART_TAB === "cap") {
-    vals = pts.map(x => (PORT_CU_UNIT === "pct" ? (x.capital > 0 ? (x.capital_used / x.capital) * 100 : 0) : x.capital_used));
-    col = "#10b981"; suffix = PORT_CU_UNIT === "pct" ? "%" : ""; fillCol = "rgba(16,185,129,0.14)";
-  } else if (PORT_CHART_TAB === "dd") {
-    let pk = pts[0].equity || pts[0].capital || 1;
-    vals = pts.map(x => { if (x.equity > pk) pk = x.equity; return pk > 0 ? ((x.equity - pk) / pk) * 100 : 0; });
-    col = "#ef4444"; suffix = "%"; fillCol = "rgba(239,68,68,0.15)";
-  } else {
-    vals = pts.map(x => (x.capital > 0 ? ((x.equity / x.capital) - 1) * 100 : 0));
-    col = "#3b82f6"; suffix = "%"; fillCol = "rgba(59,130,246,0.12)";
-  }
-
-  const W = 1100, H = 250, P = 64, R = 20;
-  let ymin = Math.min(...vals, 0), ymax = Math.max(...vals, 0);
-  if (ymax === ymin) { ymax += 1; ymin -= 1; }
-  const my = v => (H - 28) - (H - 48) * ((v - ymin) / (ymax - ymin));
-  const ptsArr = vals.length === 1 ? [vals[0], vals[0]] : vals;
-  const mx = i => P + (W - P - R) * (i / Math.max(1, ptsArr.length - 1));
-  const poly = ptsArr.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ");
-  const fmt = v => suffix ? `${v.toFixed(2)}${suffix}` : `₹${Math.round(v).toLocaleString()}`;
-  const latest = vals[vals.length - 1] || 0;
-
-  svg.innerHTML = `
-    <line x1="${P}" y1="${my(0)}" x2="${W - R}" y2="${my(0)}" stroke="#475569" stroke-dasharray="4,4"/>
-    <text x="${P - 8}" y="${my(ymax) + 4}" font-size="11" text-anchor="end" fill="#94a3b8">${fmt(ymax)}</text>
-    <text x="${P - 8}" y="${my(0) + 4}" font-size="11" text-anchor="end" fill="#64748b">${fmt(0)}</text>
-    <text x="${P - 8}" y="${my(ymin) + 4}" font-size="11" text-anchor="end" fill="#94a3b8">${fmt(ymin)}</text>
-    <polygon fill="${fillCol}" points="${P},${my(0)} ${poly} ${W - R},${my(0)}"/>
-    <polyline fill="none" stroke="${col}" stroke-width="2.5" points="${poly}"/>
-    <circle cx="${mx(ptsArr.length - 1)}" cy="${my(latest)}" r="4" fill="${col}"/>
-    <text x="${W - R}" y="18" font-size="12" font-weight="700" text-anchor="end" fill="${col}">Latest: ${fmt(latest)}</text>
-    <text x="${P}" y="${H - 6}" font-size="11" fill="#94a3b8">${dates[0] || ""}</text>
-    <text x="${W - R}" y="${H - 6}" font-size="11" text-anchor="end" fill="#94a3b8">${dates[dates.length - 1] || ""}</text>`;
+  const drawMini = (svg, vals, col, suffix, fillCol) => {
+    const W = 550, H = 170, P = 46, R = 12;
+    let ymin = Math.min(...vals, 0), ymax = Math.max(...vals, 0);
+    if (ymax === ymin) { ymax += 1; ymin -= 1; }
+    const mx = i => P + (W - P - R) * (i / Math.max(1, vals.length - 1));
+    const my = v => (H - 22) - (H - 36) * ((v - ymin) / (ymax - ymin));
+    const ptsArr = vals.length === 1 ? [vals[0], vals[0]] : vals;
+    const mx2 = i => P + (W - P - R) * (i / Math.max(1, ptsArr.length - 1));
+    const poly = ptsArr.map((v, i) => `${mx2(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ");
+    svg.innerHTML = `
+      <line x1="${P}" y1="${my(0)}" x2="${W - R}" y2="${my(0)}" stroke="#475569" stroke-dasharray="3,3"/>
+      <text x="${P - 4}" y="${my(ymax) + 4}" font-size="10" text-anchor="end" fill="#94a3b8">${ymax.toFixed(1)}${suffix}</text>
+      <text x="${P - 4}" y="${my(ymin) + 4}" font-size="10" text-anchor="end" fill="#94a3b8">${ymin.toFixed(1)}${suffix}</text>
+      ${fillCol ? `<polygon fill="${fillCol}" points="${P},${my(0)} ${poly} ${W - R},${my(0)}"/>` : ""}
+      <polyline fill="none" stroke="${col}" stroke-width="2" points="${poly}"/>
+      <text x="${P}" y="${H - 5}" font-size="9.5" fill="#94a3b8">${dates[0] || ""}</text>
+      <text x="${W - R}" y="${H - 5}" font-size="9.5" text-anchor="end" fill="#94a3b8">${dates[dates.length - 1] || ""}</text>`;
+  };
+  drawMini(eqSvg, retPct, "#3b82f6", "%", "rgba(59,130,246,0.12)");
+  drawMini(capSvg, capVals, "#10b981", PORT_CU_UNIT === "pct" ? "%" : "", "rgba(16,185,129,0.14)");
+  drawMini(ddSvg, ddPct, "#ef4444", "%", "rgba(239,68,68,0.15)");
 }
 
 async function cancelOrder(orderId) {
@@ -323,7 +307,7 @@ function renderOpenOrders() {
     const allocPct = ((Number(o.qty || 0) * Number(o.price || 0)) / Math.max(1, LAST_EQUITY)) * 100;
     return `<tr>
       <td class="left">${String(o.ts || "").slice(0, 19).replace("T", " ")}</td>
-      <td class="left">${o.order_id}</td><td class="left"><b>${o.symbol}</b></td><td class="left">${o.side}</td><td class="left">${o.order_type}</td>
+      <td class="left">${o.order_id}</td><td class="left">${exchBadge(o)}</td><td class="left">${o.side}</td><td class="left">${o.order_type}</td>
       <td>${o.qty}</td><td>${allocPct.toFixed(2)}%</td><td>${Number(o.price || 0).toFixed(2)}</td>
       <td>${o.trigger_price ? Number(o.trigger_price).toFixed(2) : "-"}</td><td class="left">${o.status}</td>
       <td class="left"><button class="btn danger" style="padding:3px 8px;" onclick="cancelOrder('${o.order_id}')">Cancel</button></td>
@@ -339,7 +323,7 @@ function renderRecentOrders() {
     .sort((a, b) => REC_SORT_ASC ? String(a[REC_SORT_COL] || "").localeCompare(String(b[REC_SORT_COL] || "")) : String(b[REC_SORT_COL] || "").localeCompare(String(a[REC_SORT_COL] || "")));
   document.getElementById("ordRows").innerHTML = list.map(o => `<tr>
     <td class="left">${String(o.ts || "").slice(0, 19).replace("T", " ")}</td>
-    <td class="left">${o.order_id}</td><td class="left"><b>${o.symbol}</b></td><td class="left">${o.side}</td><td class="left">${o.order_type}</td>
+    <td class="left">${o.order_id}</td><td class="left">${exchBadge(o)}</td><td class="left">${o.side}</td><td class="left">${o.order_type}</td>
     <td>${o.qty}</td><td>${Number(o.fill_price || o.price || 0).toFixed(2)}</td><td>${o.trigger_price ? Number(o.trigger_price).toFixed(2) : "-"}</td><td class="left">${o.status}</td>
   </tr>`).join("") || `<tr><td colspan="9" class="left muted">No recent orders</td></tr>`;
 }
@@ -363,7 +347,7 @@ function renderClosedTrades() {
       <td style="text-align:center;">${hasNote ? "👁" : ""}</td>
       <td class="left">${c.account_id || "PAPER_1"}</td>
       <td class="left"><a href="javascript:void(0)" onclick="openLiveTradeLog('closed', ${idx})">${c.trade_id || ("#" + (idx + 1))}</a></td>
-      <td class="left"><b>${c.symbol}</b></td><td class="left">${c.side}</td><td>${c.qty}</td>
+      <td class="left">${exchBadge(c)}</td><td class="left">${c.side}</td><td>${c.qty}</td>
       <td>${ep.toFixed(2)}</td><td>${xp.toFixed(2)}</td>
       <td class="${pctChg >= 0 ? "pos" : "neg"}">${pctChg >= 0 ? "+" : ""}${pctChg.toFixed(2)}%</td>
       <td>₹${Number(c.charges || 0).toFixed(2)}</td>
@@ -423,7 +407,7 @@ async function refreshPortfolio() {
     return `<tr>
       <td style="text-align:center;">${hasNote ? "👁" : ""}</td>
       <td class="left">${p.account_id || "PAPER_1"}</td>
-      <td class="left"><a href="javascript:void(0)" onclick="openLiveTradeLog('open', '${p.symbol}')"><b>${p.symbol}</b></a></td>
+      <td class="left"><a href="javascript:void(0)" onclick="openLiveTradeLog('open', '${p.symbol}')">${exchBadge(p)}</a></td>
       <td class="left">${p.product}</td><td>${p.net_qty}</td><td>${allocPct.toFixed(2)}%</td>
       <td>${avgE.toFixed(2)}</td><td>${ltp.toFixed(2)}</td><td>${sl ? sl.toFixed(2) : "-"}</td><td>${tgt ? tgt.toFixed(2) : "-"}</td>
       <td>₹${Math.round(riskInr).toLocaleString()} (${riskPct.toFixed(2)}%)</td>
@@ -560,15 +544,50 @@ document.addEventListener("paste", evt => {
   }
 });
 
+let MASTER_SYMBOLS = { NSE: [], BSE: [], synced: false };
+
+function updateSymbolDatalist() {
+  const ex = document.getElementById("ord_exchange")?.value || "NSE";
+  const dl = document.getElementById("nseSymbolList");
+  const list = MASTER_SYMBOLS[ex]?.length ? MASTER_SYMBOLS[ex] : (MASTER_SYMBOLS.NSE || []);
+  if (dl) dl.innerHTML = list.map(s => `<option value="${s}">`).join("");
+}
+
+function validateOrderSymbol() {
+  const inp = document.getElementById("ord_symbol");
+  const st = document.getElementById("ord_sym_status");
+  if (!inp || !st) return true;
+  let raw = inp.value.trim().toUpperCase();
+  if (raw.startsWith("BSE:")) {
+    document.getElementById("ord_exchange").value = "BSE";
+    raw = raw.slice(4);
+  } else if (raw.startsWith("NSE:")) {
+    document.getElementById("ord_exchange").value = "NSE";
+    raw = raw.slice(4);
+  }
+  const ex = document.getElementById("ord_exchange")?.value || "NSE";
+  if (!raw) { st.textContent = "Enter a symbol"; st.style.color = "#ef4444"; return false; }
+  if (!MASTER_SYMBOLS.synced) {
+    st.textContent = `${ex}: ${raw} (click Sync IPOs to validate)`;
+    st.style.color = "#94a3b8";
+    return true;
+  }
+  const ok = (MASTER_SYMBOLS[ex] || []).includes(raw);
+  st.textContent = ok ? `✅ Valid ${ex} symbol` : `⚠️ Not found in ${ex} master list`;
+  st.style.color = ok ? "#10b981" : "#ef4444";
+  return ok;
+}
+
 async function loadNseAutocomplete() {
   const res = await (await fetch("/api/portfolio/symbols")).json().catch(() => ({ symbols: [] }));
-  const dl = document.getElementById("nseSymbolList");
-  if (dl) dl.innerHTML = (res.symbols || []).map(s => `<option value="${s}">`).join("");
+  MASTER_SYMBOLS = { NSE: res.nse || res.symbols || [], BSE: res.bse || [], synced: !!res.synced };
+  updateSymbolDatalist();
+  validateOrderSymbol();
 }
 
 async function syncNseSymbols() {
   const res = await (await fetch("/api/portfolio/symbols/sync", { method: "POST" })).json();
-  alert(res.ok ? `Synced ${res.count} NSE equity & IPO symbols!` : `Sync failed: ${res.error}`);
+  alert(res.ok ? `Synced ${res.nse_count || res.count} NSE + ${res.bse_count || 0} BSE symbols!` : `Sync failed: ${res.error}`);
   loadNseAutocomplete();
 }
 

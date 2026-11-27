@@ -12,6 +12,7 @@ from typing import Any
 
 from tfalgo.web.core.config_store import STORE, load_settings
 
+
 def split_exchange_symbol(symbol: str, default_exch: str = "NSE") -> tuple[str, str]:
     """Split 'BSE:RELIANCE-EQ' -> ('BSE', 'RELIANCE'), or 'RELIANCE' -> ('NSE', 'RELIANCE')."""
     s = str(symbol or "").strip().upper()
@@ -41,6 +42,7 @@ def broker_symbol(symbol: str, broker_name: str, for_quote: bool = False) -> str
     if b == "kotak_neo":
         return f"{sym}-EQ"
     return f"{exch}:{sym}" if exch == "BSE" else sym
+
 
 class BrokerClient(ABC):
     name: str = "base"
@@ -84,10 +86,19 @@ class ZerodhaBroker(BrokerClient):
         return {"X-Kite-Version": "3", "Authorization": f"token {api_key}:{token}"}
 
     def _req(self, method: str, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        import urllib.error
         body = urllib.parse.urlencode(data).encode("utf-8") if data else None
         req = urllib.request.Request(f"{self.BASE}{path}", data=body, headers=self._headers(), method=method)
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            err_txt = exc.read().decode("utf-8", errors="ignore")
+            try:
+                msg = json.loads(err_txt).get("message") or err_txt
+            except Exception:
+                msg = err_txt or str(exc)
+            raise RuntimeError(f"Kite {exc.code}: {msg}") from exc
 
     def get_profile(self) -> dict[str, str]:
         try:
@@ -125,8 +136,8 @@ class ZerodhaBroker(BrokerClient):
             payload["trigger_price"] = float(trigger_price)
         res = self._req("POST", "/orders/regular", payload)
         oid = res.get("data", {}).get("order_id", "")
-        return {"order_id": oid, "account_id": self.account_id, "symbol": canonical_symbol(symbol), "side": side.upper(), "qty": qty, "order_type": order_type.upper(), "product": product.upper(), "price": price or 0.0, "trigger_price": trigger_price, "status": "OPEN", "ts": datetime.now().isoformat()}
-    
+        return {"order_id": oid, "account_id": self.account_id, "exchange": exch, "symbol": canonical_symbol(symbol), "side": side.upper(), "qty": qty, "order_type": order_type.upper(), "product": product.upper(), "price": price or 0.0, "trigger_price": trigger_price, "status": "OPEN", "ts": datetime.now().isoformat()}
+
     def modify_order(self, order_id: str, price: float | None = None, trigger_price: float | None = None, order_type: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         if price is not None: payload["price"] = float(price)
@@ -142,7 +153,7 @@ class ZerodhaBroker(BrokerClient):
     def get_orders(self) -> list[dict[str, Any]]:
         res = self._req("GET", "/orders")
         return [{
-            "order_id": o.get("order_id"), "account_id": self.account_id, "symbol": canonical_symbol(o.get("tradingsymbol") or ""),
+            "order_id": o.get("order_id"), "account_id": self.account_id, "exchange": o.get("exchange") or "NSE", "symbol": canonical_symbol(o.get("tradingsymbol") or ""),
             "side": o.get("transaction_type"), "qty": int(o.get("quantity", 0)), "order_type": o.get("order_type"),
             "product": o.get("product"), "price": float(o.get("average_price") or o.get("price") or 0.0),
             "trigger_price": o.get("trigger_price"), "status": o.get("status"), "ts": o.get("order_timestamp") or "",
@@ -151,10 +162,11 @@ class ZerodhaBroker(BrokerClient):
     def get_positions(self) -> list[dict[str, Any]]:
         res = self._req("GET", "/portfolio/positions")
         return [{
-            "symbol": canonical_symbol(p.get("tradingsymbol") or ""), "account_id": self.account_id, "product": p.get("product"),
+            "symbol": canonical_symbol(p.get("tradingsymbol") or ""), "exchange": p.get("exchange") or "NSE", "account_id": self.account_id, "product": p.get("product"),
             "net_qty": int(p.get("quantity", 0)), "avg_price": float(p.get("average_price", 0.0)),
             "ltp": float(p.get("last_price", 0.0)), "mtm": float(p.get("pnl", 0.0)),
         } for p in res.get("data", {}).get("net", []) if int(p.get("quantity", 0)) != 0]
+
 
 class PaperBroker(BrokerClient):
     name = "paper"
@@ -305,6 +317,7 @@ class PaperBroker(BrokerClient):
             p["mtm"] = round((ltp - p["avg_price"]) * p["net_qty"], 2)
         return list(self.positions)
 
+
 class LiveBrokerStub(BrokerClient):
     def __init__(self, broker_name: str, account_id: str = "STUB_1", user_name: str = "") -> None:
         self.name = broker_name
@@ -319,7 +332,9 @@ class LiveBrokerStub(BrokerClient):
     def get_orders(self) -> list[dict[str, Any]]: return []
     def get_positions(self) -> list[dict[str, Any]]: return []
 
+
 _PAPER_SINGLETON = PaperBroker()
+
 
 def get_broker_for_account(account_id: str | None = None) -> BrokerClient:
     cfg = load_settings()
@@ -339,6 +354,7 @@ def get_broker_for_account(account_id: str | None = None) -> BrokerClient:
     if cfg.get("active_broker") == "zerodha":
         return ZerodhaBroker()
     return _PAPER_SINGLETON
+
 
 def get_active_broker() -> BrokerClient:
     return get_broker_for_account(None)

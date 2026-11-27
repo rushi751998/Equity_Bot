@@ -67,12 +67,6 @@ async function loadSettingsUI() {
   renderTgBots();
 }
 
-const reqTok = new URLSearchParams(window.location.search).get("request_token");
-  if (reqTok) {
-    document.getElementById("br_z_req_tok").value = reqTok;
-    window.history.replaceState({}, "", "/settings");
-    if (b.zerodha?.api_key && b.zerodha?.api_secret) exchangeKiteToken();
-  }
 
 function renderAccountsManager() {
   const box = document.getElementById("accountsManagerBox");
@@ -89,7 +83,6 @@ function renderAccountsManager() {
         <button type="button" class="btn danger" style="padding:4px 8px;" onclick="BROKER_ACCOUNTS.splice(${i},1);renderAccountsManager()">×</button>
       </div>
     </div>`).join("");
-  attachEyeToggles();
 }
 
 function addBrokerAccount() {
@@ -206,30 +199,6 @@ async function generatePyotp() {
 async function verifyPyotp() {
   const res = await (await fetch("/api/settings/pyotp_verify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret: document.getElementById("pyotp_secret").value, code: document.getElementById("pyotp_check").value }) })).json();
   alert(res.ok ? "PyOTP Verified!" : "Invalid 6-digit code.");
-}
-
-function attachEyeToggles() {
-  document.querySelectorAll('input[type="password"]').forEach(inp => {
-    if (inp.dataset.eyeReady) return;
-    inp.dataset.eyeReady = "1";
-    const wrap = document.createElement("div");
-    wrap.style.cssText = "display:flex;align-items:center;gap:4px;";
-    inp.parentNode.insertBefore(wrap, inp);
-    inp.style.flex = "1";
-    wrap.appendChild(inp);
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn";
-    btn.textContent = "👁";
-    btn.title = "Show / Hide";
-    btn.style.cssText = "padding:4px 8px;font-size:12px;line-height:1;";
-    btn.onclick = () => {
-      const show = inp.type === "password";
-      inp.type = show ? "text" : "password";
-      btn.textContent = show ? "🙈" : "👁";
-    };
-    wrap.appendChild(btn);
-  });
 }
 
 document.addEventListener("DOMContentLoaded", loadSettingsUI);

@@ -45,7 +45,6 @@ class ExecutionManager:
             interval = max(3, int(load_settings().get("sync_interval_sec", 10)))
             self._stop_evt.wait(interval)
 
-
     def place_smart_order(
         self,
         symbol: str,
@@ -66,6 +65,10 @@ class ExecutionManager:
             return {"ok": False, "error": "SHORT equity orders must use MIS (intraday)."}
 
         broker = get_broker_for_account(account_id)
+        try:
+            ord_res = broker.place_order(symbol, side, qty, "LIMIT", product, price=limit_price)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
         ord_res = broker.place_order(symbol, side, qty, "LIMIT", product, price=limit_price)
         self.push_toast("buy" if side == "BUY" else "target", f"{symbol} {side} {qty} LIMIT @ ₹{limit_price} ({broker.account_id})")
         STORE.log_audit("order_placed", {"order": ord_res, "sl_price": sl_price, "target_price": target_price})
@@ -73,7 +76,7 @@ class ExecutionManager:
         # Register SL expectation & start background 5s chase thread
         threading.Thread(
             target=self._chase_and_arm_sl,
-            args=(ord_res["order_id"], symbol.upper(), side, qty, product, limit_price, sl_price, target_price, targets or [], move_sl_be_after_t1, account_id),
+            args=(ord_res["order_id"], symbol.upper(), side, qty, product, limit_price, sl_price, target_price, targets or [], move_sl_be_after_t1),
             daemon=True,
         ).start()
         return {"ok": True, "order": ord_res}
@@ -202,7 +205,7 @@ class ExecutionManager:
                 if sl_oid and sl_oid in open_order_ids:
                     broker.cancel_order(sl_oid)
                 new_sl = p["avg_price"] if (reg.get("move_sl_be_after_t1") and not reg.get("be_moved")) else sl_px
-                self._arm_sl_order(sym, "BUY" if is_long else "SELL", open_qty, p["product"], new_sl, p.get("target_price"), account_id=account_id)
+                self._arm_sl_order(sym, "BUY" if is_long else "SELL", open_qty, p["product"], new_sl, p.get("target_price"))
                 self.sl_registry[sym]["be_moved"] = True
                 self.sl_registry[sym]["target_order_ids"] = reg.get("target_order_ids", [])
                 send_telegram_alert("fill", f"{sym} partial target filled. SL synced to {open_qty} qty @ {new_sl}")
@@ -217,8 +220,9 @@ class ExecutionManager:
                     self.push_toast("sl", f"SL BREACHED: {sym} exited @ MARKET (LTP ₹{ltp})")
                     send_telegram_alert("sl_breach", f"ALERT: {sym} SL missing & breached (LTP {ltp} vs SL {sl_px}). Executed MARKET exit!")
                 elif cfg.get("auto_replace_missing_sl", True):
-                    self._arm_sl_order(sym, "BUY" if is_long else "SELL", abs(p["net_qty"]), p["product"], sl_px, p.get("target_price"), account_id=account_id)
+                    self._arm_sl_order(sym, "BUY" if is_long else "SELL", abs(p["net_qty"]), p["product"], sl_px, p.get("target_price"))
                     send_telegram_alert("sl_missing", f"WARNING: {sym} SL was removed by broker/exchange. Re-placed SL @ {sl_px}.")
+
 
         # Evaluate Telegram Price Alerts
         alerts_p = __import__("pathlib").Path("data/price_alerts.json")
@@ -241,6 +245,7 @@ class ExecutionManager:
                     alerts_p.write_text(_json.dumps(remaining), encoding="utf-8")
             except Exception:
                 pass
+
 
         # Record daily equity snapshot automatically (for Account P&L, Capital Used & DD charts)
         try:
@@ -297,6 +302,5 @@ class ExecutionManager:
         send_telegram_alert("sl_breach", f"PANIC FLATTEN ALL triggered. Closed {len(exited)} position(s).")
         return {"ok": True, "exited": len(exited)}
 
-    
 
 EXEC_MGR = ExecutionManager()
