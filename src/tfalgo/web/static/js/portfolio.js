@@ -18,7 +18,7 @@ let REC_SORT_ASC = false;
 let ACTIVE_JOURNAL_KEY = "";
 let PENDING_JOURNAL_IMG = "";
 
-function openOrderModal() { document.getElementById("orderModal")?.classList.add("open"); recalcOrderTicket(); }
+function openOrderModal(skipLtp = false) { document.getElementById("orderModal")?.classList.add("open"); recalcOrderTicket(); if (!skipLtp) fetchOrderLtp(true); }
 function closeOrderModal() { document.getElementById("orderModal")?.classList.remove("open"); }
 function closeLiveTradeModal() { document.getElementById("liveTradeModal")?.classList.remove("open"); }
 
@@ -605,7 +605,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (p.sl) document.getElementById("ord_sl").value = p.sl;
       if (p.target) document.getElementById("ord_target").value = p.target;
       sessionStorage.removeItem("tfalgo_prefill_order");
-      openOrderModal();
+      openOrderModal(true);
     } catch {}
   }
   loadNseAutocomplete();
@@ -613,3 +613,32 @@ document.addEventListener("DOMContentLoaded", () => {
   refreshAlerts();
   setInterval(refreshPortfolio, 10000);
 });
+
+
+let _LTP_TIMER = null;
+function debouncedFetchLtp() {
+  clearTimeout(_LTP_TIMER);
+  _LTP_TIMER = setTimeout(() => fetchOrderLtp(true), 400);
+}
+
+async function fetchOrderLtp(autoAdjustSlTgt = true) {
+  const sym = (document.getElementById("ord_symbol")?.value || "").trim().toUpperCase();
+  const ex = document.getElementById("ord_exchange")?.value || "NSE";
+  if (!sym) return;
+  try {
+    const res = await (await fetch(`/api/portfolio/ltp?symbol=${encodeURIComponent(sym)}&exchange=${encodeURIComponent(ex)}`)).json();
+    if (res.ok && res.ltp > 0) {
+      const ltp = Number(res.ltp.toFixed(2));
+      const pxEl = document.getElementById("ord_price");
+      if (pxEl) pxEl.value = ltp;
+      if (autoAdjustSlTgt) {
+        const side = document.getElementById("ord_side")?.value || "BUY";
+        const slEl = document.getElementById("ord_sl");
+        const tgtEl = document.getElementById("ord_target");
+        if (slEl && SL_MODE === "px") slEl.value = (side === "BUY" ? ltp * 0.99 : ltp * 1.01).toFixed(2);
+        if (tgtEl) tgtEl.value = (side === "BUY" ? ltp * 1.03 : ltp * 0.97).toFixed(2);
+      }
+      recalcOrderTicket();
+    }
+  } catch {}
+}

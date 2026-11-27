@@ -483,3 +483,15 @@ def get_historical_candles(symbol: str = "RELIANCE", exchange: str = "NSE", inte
         return {"ok": True, "symbol": full_sym, "interval": interval, "count": len(candles), "candles": candles}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+@router.get("/ltp")
+def get_live_ltp(symbol: str = "RELIANCE", exchange: str = "NSE") -> dict[str, Any]:
+    from tfalgo.web.core.brokers import get_tick_broker, split_exchange_symbol
+    exch, sym = split_exchange_symbol(symbol, default_exch=exchange or "NSE")
+    full_sym = f"{exch}:{sym}" if exch == "BSE" else sym
+    try:
+        ltp = float(get_tick_broker().get_ltp(full_sym) or 0.0)
+        return {"ok": ltp > 0, "symbol": sym, "exchange": exch, "ltp": ltp}
+    except Exception as exc:
+        return {"ok": False, "symbol": sym, "exchange": exch, "ltp": 0.0, "error": str(exc)}

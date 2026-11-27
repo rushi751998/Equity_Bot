@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from tfalgo.web.core.brokers import get_active_broker, get_broker_for_account
+from tfalgo.web.core.brokers import get_active_broker, get_broker_for_account, get_tick_broker
 from tfalgo.web.core.config_store import STORE, load_settings
 from tfalgo.web.core.notifier import send_telegram_alert
 
@@ -110,7 +110,7 @@ class ExecutionManager:
             if attempt == max_retries:
                 break
             time.sleep(interval)
-            ltp = broker.get_ltp(symbol)
+            ltp = get_tick_broker().get_ltp(symbol) or broker.get_ltp(symbol)
             sl_breached = (ltp <= sl_price) if side == "BUY" else (ltp >= sl_price)
             slip_pct = abs(ltp - init_price) / max(init_price, 1e-6) * 100.0
             if sl_breached or slip_pct > max_slip_pct:
@@ -182,7 +182,16 @@ class ExecutionManager:
     def sync_and_guard(self, account_id: str | None = None) -> dict[str, Any]:
         """10s broker sync + SL Watchdog verifying SL is intact in broker/exchange."""
         broker = get_broker_for_account(account_id)
+        tick_broker = get_tick_broker()
         positions = broker.get_positions()
+        for p in positions:
+            try:
+                tl = tick_broker.get_ltp(f"BSE:{p['symbol']}" if p.get("exchange") == "BSE" else p["symbol"])
+                if tl > 0:
+                    p["ltp"] = tl
+                    p["mtm"] = round((tl - float(p.get("avg_price", 0))) * float(p.get("net_qty", 0)), 2)
+            except Exception:
+                pass
         orders = broker.get_orders()
         open_order_ids = {o["order_id"] for o in orders if o["status"] in ("OPEN", "TRIGGER_PENDING")}
         cfg = load_settings()
@@ -232,7 +241,7 @@ class ExecutionManager:
                 changed = False
                 remaining = []
                 for a in alerts:
-                    ltp_a = broker.get_ltp(a["symbol"])
+                    ltp_a = tick_broker.get_ltp(a["symbol"]) or broker.get_ltp(a["symbol"])
                     cond = a.get("condition", ">=")
                     hit = (ltp_a >= float(a["price"])) if cond == ">=" else (ltp_a <= float(a["price"]))
                     if hit:
