@@ -12,29 +12,35 @@ from typing import Any
 
 from tfalgo.web.core.config_store import STORE, load_settings
 
-def canonical_symbol(symbol: str) -> str:
-    """Normalize NSE:RELIANCE-EQ / RELIANCE-EQ / NSE:RELIANCE -> RELIANCE."""
+def split_exchange_symbol(symbol: str, default_exch: str = "NSE") -> tuple[str, str]:
+    """Split 'BSE:RELIANCE-EQ' -> ('BSE', 'RELIANCE'), or 'RELIANCE' -> ('NSE', 'RELIANCE')."""
     s = str(symbol or "").strip().upper()
+    exch = default_exch.upper()
     if ":" in s:
-        s = s.split(":", 1)[1]
+        exch, s = s.split(":", 1)
     for suf in ("-EQ", "-BE", "-BZ", "-SM"):
         if s.endswith(suf):
             s = s[:-len(suf)]
-    return s
+    return (exch if exch in ("NSE", "BSE") else default_exch.upper()), s
+
+
+def canonical_symbol(symbol: str) -> str:
+    """Normalize NSE:RELIANCE-EQ -> RELIANCE; keeps BSE: prefix when BSE."""
+    exch, sym = split_exchange_symbol(symbol)
+    return f"BSE:{sym}" if exch == "BSE" else sym
 
 
 def broker_symbol(symbol: str, broker_name: str, for_quote: bool = False) -> str:
-    """Translate canonical NSE symbol (RELIANCE) to each broker's native format."""
-    sym = canonical_symbol(symbol)
+    """Translate RELIANCE or BSE:RELIANCE to each broker's native NSE/BSE format."""
+    exch, sym = split_exchange_symbol(symbol)
     b = str(broker_name or "paper").lower()
     if b == "zerodha":
-        return f"NSE:{sym}" if for_quote else sym
+        return f"{exch}:{sym}" if for_quote else sym
     if b == "fyers":
-        return f"NSE:{sym}-EQ"
+        return f"{exch}:{sym}-EQ"
     if b == "kotak_neo":
         return f"{sym}-EQ"
-    return sym
-
+    return f"{exch}:{sym}" if exch == "BSE" else sym
 
 class BrokerClient(ABC):
     name: str = "base"
@@ -108,8 +114,9 @@ class ZerodhaBroker(BrokerClient):
         return float(res.get("data", {}).get(inst, {}).get("last_price", 0.0))
 
     def place_order(self, symbol: str, side: str, qty: int, order_type: str, product: str, price: float | None = None, trigger_price: float | None = None) -> dict[str, Any]:
+        exch, _ = split_exchange_symbol(symbol)
         payload: dict[str, Any] = {
-            "tradingsymbol": broker_symbol(symbol, "zerodha"), "exchange": "NSE", "transaction_type": side.upper(),
+            "tradingsymbol": broker_symbol(symbol, "zerodha"), "exchange": exch, "transaction_type": side.upper(),
             "order_type": order_type.upper(), "quantity": int(qty), "product": product.upper(), "validity": "DAY",
         }
         if price is not None and order_type.upper() in ("LIMIT", "SL"):
@@ -119,7 +126,7 @@ class ZerodhaBroker(BrokerClient):
         res = self._req("POST", "/orders/regular", payload)
         oid = res.get("data", {}).get("order_id", "")
         return {"order_id": oid, "account_id": self.account_id, "symbol": canonical_symbol(symbol), "side": side.upper(), "qty": qty, "order_type": order_type.upper(), "product": product.upper(), "price": price or 0.0, "trigger_price": trigger_price, "status": "OPEN", "ts": datetime.now().isoformat()}
-
+    
     def modify_order(self, order_id: str, price: float | None = None, trigger_price: float | None = None, order_type: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         if price is not None: payload["price"] = float(price)
