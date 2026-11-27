@@ -24,6 +24,10 @@ REQUIRED_COLLECTIONS = [
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "active_broker": "paper",
+    "active_account": "PAPER_1",
+    "accounts": [
+        {"account_id": "PAPER_1", "user_name": "Paper Pilot", "broker": "paper", "api_key": "", "api_secret": "", "totp_secret": "", "access_token": "", "is_tick_source": True}
+    ],
     "sync_interval_sec": 10,
     "chase_interval_sec": 5,
     "chase_max_retries": 2,

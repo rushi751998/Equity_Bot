@@ -15,6 +15,20 @@ function applyCustomThemeColors(tc) {
 }
 window.applyCustomThemeColors = applyCustomThemeColors;
 
+
+const SEEN_TOAST_IDS = new Set();
+
+function showOrderToast(kind, message) {
+  const wrap = document.getElementById("tfToastContainer");
+  if (!wrap) return;
+  const div = document.createElement("div");
+  div.className = "tf-toast " + (kind === "sl" ? "red" : "green");
+  div.innerHTML = `<span>${message}</span><button type="button" onclick="this.parentElement.remove()" style="background:none;border:none;color:#fff;font-weight:800;cursor:pointer;">×</button>`;
+  wrap.appendChild(div);
+  setTimeout(() => div.remove(), 5000);
+}
+window.showOrderToast = showOrderToast;
+
 function toggleTheme() {
   const dark = !isDarkMode();
   document.documentElement.classList.toggle("tf-dark", dark);
@@ -62,6 +76,19 @@ async function initCoreHeader() {
       const h = await (await fetch("/api/health")).json();
       const badge = document.getElementById("healthBadge");
       if (badge) badge.textContent = `Sync: ${h.last_sync_ts || "live"}`;
+      const ps = await (await fetch("/api/portfolio/state")).json().catch(() => null);
+      if (ps && ps.profile) {
+        const pb = document.getElementById("profileBadge");
+        if (pb) pb.textContent = `👤 ${ps.profile.user_name || ps.profile.user_id}`;
+      }
+      if (ps && Array.isArray(ps.toasts)) {
+        ps.toasts.forEach(t => {
+          if (!SEEN_TOAST_IDS.has(t.id)) {
+            SEEN_TOAST_IDS.add(t.id);
+            showOrderToast(t.kind, t.message);
+          }
+        });
+      }
     } catch {}
   };
   pollHealth();

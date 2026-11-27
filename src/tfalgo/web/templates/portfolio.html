@@ -13,6 +13,7 @@
       <button type="button" class="btn primary perf-filter-btn" onclick="setPerfFilter('all', this)">All Trades</button>
       <button type="button" class="btn perf-filter-btn" onclick="setPerfFilter('closed', this)">Closed Trades</button>
       <button type="button" class="btn perf-filter-btn" onclick="setPerfFilter('running', this)">Running Trades</button>
+      <select id="perfAcctFilter" onchange="renderPerformanceMetrics()" style="padding:5px 8px;"><option value="">All Accounts</option></select>
     </div>
   </div>
   <div class="kpi-grid" id="perfMetricsGrid" style="margin-bottom:0;"></div>
@@ -59,7 +60,7 @@
       <table>
         <thead>
           <tr>
-            <th style="width:28px;">👁</th><th class="left">Symbol</th><th class="left">Product</th><th>Qty</th><th>Alloc %</th>
+            <th style="width:28px;">👁</th><th class="left">Account</th><th class="left">Symbol</th><th class="left">Product</th><th>Qty</th><th>Alloc %</th>
             <th>Avg Entry</th><th>LTP</th><th>SL</th><th>Target</th><th>Risk (₹ / %)</th>
             <th>Live R</th><th>MTM (₹)</th><th class="left">Quick Exit</th>
           </tr>
@@ -125,7 +126,7 @@
     </div>
     <div class="table-wrap" style="max-height:440px;">
       <table>
-        <thead><tr><th style="width:28px;">👁</th><th class="left">ID</th><th class="left">Symbol</th><th class="left">Side</th><th>Qty</th><th>Avg Entry</th><th>Avg Exit</th><th>% Chg</th><th>Charges (₹)</th><th>Risk (₹)</th><th>Net P&amp;L (₹)</th><th>Final R</th><th class="left">Closed At</th></tr></thead>
+        <thead><tr><th style="width:28px;">👁</th><th class="left">ID</th><th class="left">Account</th><th class="left">Symbol</th><th class="left">Side</th><th>Qty</th><th>Avg Entry</th><th>Avg Exit</th><th>% Chg</th><th>Charges (₹)</th><th>Risk (₹)</th><th>Net P&amp;L (₹)</th><th>Final R</th><th class="left">Closed At</th></tr></thead>
         <tbody id="closedRows"></tbody>
       </table>
     </div>
@@ -192,6 +193,7 @@
       </div>
     </div>
     <div class="form-grid">
+      <div class="field"><label>Broker Account</label><select id="ord_account"></select></div>
       <div class="field"><label>Symbol</label><input id="ord_symbol" value="RELIANCE" list="nseSymbolList" placeholder="Type symbol..."></div>
       <div class="field"><label>Side</label><select id="ord_side" onchange="recalcOrderTicket()"><option value="BUY">BUY (Long)</option><option value="SELL">SELL (Short - MIS)</option></select></div>
       <div class="field"><label>Product</label><select id="ord_product"><option value="MIS">MIS (Intraday)</option><option value="CNC">CNC (Delivery)</option></select></div>
@@ -278,4 +280,4 @@
   <img id="imgLightboxImg" src="" alt="Screenshot Preview">
 </div>
 {% endblock %}
-{% block scripts %}<script src="/static/js/portfolio.js"></script>{% endblock %}
+{% block scripts %}<script src="/static/js/portfolio.js?v=3"></script>{% endblock %}

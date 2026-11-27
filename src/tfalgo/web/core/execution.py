@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from tfalgo.web.core.brokers import get_active_broker
+from tfalgo.web.core.brokers import get_active_broker, get_broker_for_account
 from tfalgo.web.core.config_store import STORE, load_settings
 from tfalgo.web.core.notifier import send_telegram_alert
 
@@ -15,9 +15,15 @@ class ExecutionManager:
     def __init__(self) -> None:
         self.last_sync_ts: str = ""
         self.active_chases: dict[str, dict[str, Any]] = {}
-        self.sl_registry: dict[str, dict[str, Any]] = {}  # symbol -> {sl_price, sl_order_id, side, qty, product}
+        self.sl_registry: dict[str, dict[str, Any]] = {}
+        self.toast_queue: list[dict[str, Any]] = []  # symbol -> {sl_price, sl_order_id, side, qty, product}
         self._stop_evt = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def push_toast(self, kind: str, message: str) -> None:
+        import uuid as _u
+        self.toast_queue.append({"id": _u.uuid4().hex[:8], "kind": kind, "message": message, "ts": datetime.now().strftime("%H:%M:%S")})
+        self.toast_queue = self.toast_queue[-30:]
 
     def start_watchdog(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -39,6 +45,7 @@ class ExecutionManager:
             interval = max(3, int(load_settings().get("sync_interval_sec", 10)))
             self._stop_evt.wait(interval)
 
+
     def place_smart_order(
         self,
         symbol: str,
@@ -50,6 +57,7 @@ class ExecutionManager:
         target_price: float | None = None,
         targets: list[dict[str, Any]] | None = None,
         move_sl_be_after_t1: bool = True,
+        account_id: str | None = None,
     ) -> dict[str, Any]:
         """Place LIMIT order, chase every 5s up to N retries while SL is unbreached, then arm SL."""
         side = side.upper()
@@ -57,14 +65,15 @@ class ExecutionManager:
         if side == "SHORT" and product == "CNC":
             return {"ok": False, "error": "SHORT equity orders must use MIS (intraday)."}
 
-        broker = get_active_broker()
+        broker = get_broker_for_account(account_id)
         ord_res = broker.place_order(symbol, side, qty, "LIMIT", product, price=limit_price)
+        self.push_toast("buy" if side == "BUY" else "target", f"{symbol} {side} {qty} LIMIT @ ₹{limit_price} ({broker.account_id})")
         STORE.log_audit("order_placed", {"order": ord_res, "sl_price": sl_price, "target_price": target_price})
 
         # Register SL expectation & start background 5s chase thread
         threading.Thread(
             target=self._chase_and_arm_sl,
-            args=(ord_res["order_id"], symbol.upper(), side, qty, product, limit_price, sl_price, target_price, targets or [], move_sl_be_after_t1),
+            args=(ord_res["order_id"], symbol.upper(), side, qty, product, limit_price, sl_price, target_price, targets or [], move_sl_be_after_t1, account_id),
             daemon=True,
         ).start()
         return {"ok": True, "order": ord_res}
@@ -81,18 +90,19 @@ class ExecutionManager:
         target_price: float | None,
         targets: list[dict[str, Any]],
         move_sl_be_after_t1: bool,
+        account_id: str | None = None,
     ) -> None:
         cfg = load_settings()
         interval = max(2, int(cfg.get("chase_interval_sec", 5)))
         max_retries = max(0, int(cfg.get("chase_max_retries", 2)))
         max_slip_pct = float(cfg.get("chase_max_slip_pct", 0.5))
-        broker = get_active_broker()
+        broker = get_broker_for_account(account_id)
 
         for attempt in range(max_retries + 1):
             orders = {o["order_id"]: o for o in broker.get_orders()}
             cur = orders.get(order_id, {})
             if cur.get("status") == "COMPLETE":
-                self._arm_sl_order(symbol, side, qty, product, sl_price, target_price, targets=targets, move_sl_be_after_t1=move_sl_be_after_t1)
+                self._arm_sl_order(symbol, side, qty, product, sl_price, target_price, targets=targets, move_sl_be_after_t1=move_sl_be_after_t1, account_id=account_id)
                 send_telegram_alert("fill", f"{symbol} {side} {qty} FILLED @ {cur.get('fill_price', init_price)}. SL armed @ {sl_price}")
                 return
             if attempt == max_retries:
@@ -115,7 +125,7 @@ class ExecutionManager:
         if cur.get("status") != "COMPLETE":
             if cfg.get("direct_market_exit", True):
                 broker.modify_order(order_id, order_type="MARKET")
-                self._arm_sl_order(symbol, side, qty, product, sl_price, target_price, targets=targets, move_sl_be_after_t1=move_sl_be_after_t1)
+                self._arm_sl_order(symbol, side, qty, product, sl_price, target_price, targets=targets, move_sl_be_after_t1=move_sl_be_after_t1, account_id=account_id)
                 send_telegram_alert("fill", f"{symbol} {side} {qty} converted to MARKET after {max_retries} chase(s). SL @ {sl_price}")
             else:
                 broker.cancel_order(order_id)
@@ -130,8 +140,9 @@ class ExecutionManager:
         target_price: float | None,
         targets: list[dict[str, Any]] | None = None,
         move_sl_be_after_t1: bool = True,
+        account_id: str | None = None,
     ) -> None:
-        broker = get_active_broker()
+        broker = get_broker_for_account(account_id)
         sl_side = "SELL" if entry_side == "BUY" else "BUY"
         sl_ord = broker.place_order(symbol, sl_side, qty, "SL-M", product, price=sl_price, trigger_price=sl_price)
 
@@ -166,9 +177,9 @@ class ExecutionManager:
                 if not p.get("initial_risk_inr"):
                     p["initial_risk_inr"] = round(abs(p["avg_price"] - sl_price) * p.get("peak_qty", abs(p["net_qty"])), 2)
 
-    def sync_and_guard(self) -> dict[str, Any]:
+    def sync_and_guard(self, account_id: str | None = None) -> dict[str, Any]:
         """10s broker sync + SL Watchdog verifying SL is intact in broker/exchange."""
-        broker = get_active_broker()
+        broker = get_broker_for_account(account_id)
         positions = broker.get_positions()
         orders = broker.get_orders()
         open_order_ids = {o["order_id"] for o in orders if o["status"] in ("OPEN", "TRIGGER_PENDING")}
@@ -191,7 +202,7 @@ class ExecutionManager:
                 if sl_oid and sl_oid in open_order_ids:
                     broker.cancel_order(sl_oid)
                 new_sl = p["avg_price"] if (reg.get("move_sl_be_after_t1") and not reg.get("be_moved")) else sl_px
-                self._arm_sl_order(sym, "BUY" if is_long else "SELL", open_qty, p["product"], new_sl, p.get("target_price"))
+                self._arm_sl_order(sym, "BUY" if is_long else "SELL", open_qty, p["product"], new_sl, p.get("target_price"), account_id=account_id)
                 self.sl_registry[sym]["be_moved"] = True
                 self.sl_registry[sym]["target_order_ids"] = reg.get("target_order_ids", [])
                 send_telegram_alert("fill", f"{sym} partial target filled. SL synced to {open_qty} qty @ {new_sl}")
@@ -203,11 +214,11 @@ class ExecutionManager:
                 if breached:
                     exit_side = "SELL" if is_long else "BUY"
                     broker.place_order(sym, exit_side, abs(p["net_qty"]), "MARKET", p["product"])
+                    self.push_toast("sl", f"SL BREACHED: {sym} exited @ MARKET (LTP ₹{ltp})")
                     send_telegram_alert("sl_breach", f"ALERT: {sym} SL missing & breached (LTP {ltp} vs SL {sl_px}). Executed MARKET exit!")
                 elif cfg.get("auto_replace_missing_sl", True):
-                    self._arm_sl_order(sym, "BUY" if is_long else "SELL", abs(p["net_qty"]), p["product"], sl_px, p.get("target_price"))
+                    self._arm_sl_order(sym, "BUY" if is_long else "SELL", abs(p["net_qty"]), p["product"], sl_px, p.get("target_price"), account_id=account_id)
                     send_telegram_alert("sl_missing", f"WARNING: {sym} SL was removed by broker/exchange. Re-placed SL @ {sl_px}.")
-
 
         # Evaluate Telegram Price Alerts
         alerts_p = __import__("pathlib").Path("data/price_alerts.json")
@@ -230,7 +241,6 @@ class ExecutionManager:
                     alerts_p.write_text(_json.dumps(remaining), encoding="utf-8")
             except Exception:
                 pass
-
 
         # Record daily equity snapshot automatically (for Account P&L, Capital Used & DD charts)
         try:
@@ -260,8 +270,8 @@ class ExecutionManager:
         self.last_sync_ts = datetime.now().strftime("%H:%M:%S")
         return {"positions": positions, "orders": orders, "last_sync_ts": self.last_sync_ts}
 
-    def quick_exit(self, symbol: str, fraction: float = 1.0) -> dict[str, Any]:
-        broker = get_active_broker()
+    def quick_exit(self, symbol: str, fraction: float = 1.0, account_id: str | None = None) -> dict[str, Any]:
+        broker = get_broker_for_account(account_id)
         pos = next((p for p in broker.get_positions() if p["symbol"] == symbol.upper()), None)
         if not pos:
             return {"ok": False, "error": f"No open position for {symbol}"}
@@ -274,8 +284,8 @@ class ExecutionManager:
         send_telegram_alert("fill", f"Quick Exit {pos['symbol']} {side} {qty} @ MARKET")
         return {"ok": True, "order": res}
 
-    def flatten_all(self) -> dict[str, Any]:
-        broker = get_active_broker()
+    def flatten_all(self, account_id: str | None = None) -> dict[str, Any]:
+        broker = get_broker_for_account(account_id)
         for o in broker.get_orders():
             if o["status"] in ("OPEN", "TRIGGER_PENDING"):
                 broker.cancel_order(o["order_id"])
@@ -287,5 +297,6 @@ class ExecutionManager:
         send_telegram_alert("sl_breach", f"PANIC FLATTEN ALL triggered. Closed {len(exited)} position(s).")
         return {"ok": True, "exited": len(exited)}
 
+    
 
 EXEC_MGR = ExecutionManager()

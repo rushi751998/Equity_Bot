@@ -1,3 +1,4 @@
+let BROKER_ACCOUNTS = [];
 let TG_BOTS = [];
 
 const THEME_PRESETS = {
@@ -61,7 +62,32 @@ async function loadSettingsUI() {
   document.getElementById("br_k_tok").value = b.kotak_neo?.access_token || "";
 
   TG_BOTS = s.telegram_bots || [];
+  BROKER_ACCOUNTS = s.accounts || [];
+  renderAccountsManager();
   renderTgBots();
+}
+
+
+function renderAccountsManager() {
+  const box = document.getElementById("accountsManagerBox");
+  if (!box) return;
+  box.innerHTML = BROKER_ACCOUNTS.map((a, i) => `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--card-alt);display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;align-items:end;">
+      <div class="field"><label>Account ID</label><input value="${a.account_id || ""}" oninput="BROKER_ACCOUNTS[${i}].account_id=this.value"></div>
+      <div class="field"><label>User Name</label><input value="${a.user_name || ""}" oninput="BROKER_ACCOUNTS[${i}].user_name=this.value"></div>
+      <div class="field"><label>Broker</label><select onchange="BROKER_ACCOUNTS[${i}].broker=this.value"><option value="paper" ${a.broker==="paper"?"selected":""}>Paper</option><option value="zerodha" ${a.broker==="zerodha"?"selected":""}>Zerodha</option><option value="fyers" ${a.broker==="fyers"?"selected":""}>Fyers</option><option value="kotak_neo" ${a.broker==="kotak_neo"?"selected":""}>Kotak Neo</option></select></div>
+      <div class="field"><label>API Key</label><input type="password" value="${a.api_key || ""}" oninput="BROKER_ACCOUNTS[${i}].api_key=this.value"></div>
+      <div class="field"><label>Access Token</label><input type="password" value="${a.access_token || ""}" oninput="BROKER_ACCOUNTS[${i}].access_token=this.value"></div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <label class="muted" style="font-size:11.5px;"><input type="radio" name="tickSrc" ${a.is_tick_source?"checked":""} onchange="BROKER_ACCOUNTS.forEach((x,j)=>x.is_tick_source=(j===${i}))"> Tick Source</label>
+        <button type="button" class="btn danger" style="padding:4px 8px;" onclick="BROKER_ACCOUNTS.splice(${i},1);renderAccountsManager()">×</button>
+      </div>
+    </div>`).join("");
+}
+
+function addBrokerAccount() {
+  BROKER_ACCOUNTS.push({ account_id: `ACCT_${BROKER_ACCOUNTS.length + 1}`, user_name: "Trader", broker: "zerodha", api_key: "", api_secret: "", totp_secret: "", access_token: "", is_tick_source: false });
+  renderAccountsManager();
 }
 
 function renderTgBots() {
@@ -152,6 +178,7 @@ async function saveAllSettings(silent = false) {
       primary: document.getElementById("th_primary").value,
     },
     telegram_bots: TG_BOTS,
+    accounts: BROKER_ACCOUNTS,
     brokers: {
       zerodha: { api_key: document.getElementById("br_z_key").value, api_secret: document.getElementById("br_z_sec").value, totp_secret: document.getElementById("br_z_totp").value, access_token: document.getElementById("br_z_tok").value },
       fyers: { app_id: document.getElementById("br_f_id").value, secret_key: document.getElementById("br_f_sec").value, totp_secret: document.getElementById("br_f_totp").value, access_token: document.getElementById("br_f_tok").value },

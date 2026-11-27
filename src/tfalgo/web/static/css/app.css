@@ -244,3 +244,28 @@ svg { background: var(--card); border-radius: 8px; width: 100%; }
 .lightbox.open { display: flex; }
 .lightbox img { max-width: 96vw; max-height: 92vh; border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,0.6); }
 .journal-img-thumb { cursor: zoom-in; }
+
+
+.tf-toast-wrap {
+  position: fixed;
+  top: 66px;
+  right: 18px;
+  z-index: 400;
+  display: grid;
+  gap: 8px;
+  max-width: min(360px, 90vw);
+}
+.tf-toast {
+  padding: 11px 14px;
+  border-radius: 9px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+}
+.tf-toast.green { background: #16a34a; }
+.tf-toast.red { background: #dc2626; }

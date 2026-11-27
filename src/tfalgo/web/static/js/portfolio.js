@@ -156,9 +156,11 @@ async function submitSmartOrder() {
     target_price: parseFloat(document.getElementById("ord_target").value || "0") || null,
     targets: resolveTargetLegs(),
     move_sl_be_after_t1: !!document.getElementById("ord_be_after_t1")?.checked,
+    account_id: document.getElementById("ord_account")?.value || null,
   };
   const res = await (await fetch("/api/portfolio/order", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })).json();
   if (msg) msg.textContent = res.ok ? `Placed ${res.order.order_id} (${res.order.status})` : `Error: ${res.error}`;
+  if (res.ok && window.showOrderToast) showOrderToast(side === "BUY" ? "buy" : "target", `${payload.symbol} ${side} ${payload.qty} placed!`);
   await refreshPortfolio();
 }
 
@@ -259,12 +261,14 @@ function renderPortfolioCharts() {
     if (ymax === ymin) { ymax += 1; ymin -= 1; }
     const mx = i => P + (W - P - R) * (i / Math.max(1, vals.length - 1));
     const my = v => (H - 22) - (H - 36) * ((v - ymin) / (ymax - ymin));
-    const poly = vals.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ");
+    const ptsArr = vals.length === 1 ? [vals[0], vals[0]] : vals;
+    const mx2 = i => P + (W - P - R) * (i / Math.max(1, ptsArr.length - 1));
+    const poly = ptsArr.map((v, i) => `${mx2(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ");
     svg.innerHTML = `
       <line x1="${P}" y1="${my(0)}" x2="${W - R}" y2="${my(0)}" stroke="#475569" stroke-dasharray="3,3"/>
       <text x="${P - 4}" y="${my(ymax) + 4}" font-size="10" text-anchor="end" fill="#94a3b8">${ymax.toFixed(1)}${suffix}</text>
       <text x="${P - 4}" y="${my(ymin) + 4}" font-size="10" text-anchor="end" fill="#94a3b8">${ymin.toFixed(1)}${suffix}</text>
-      ${fillCol ? `<polygon fill="${fillCol}" points="${P},${my(0)} ${poly} ${mx(vals.length - 1)},${my(0)}"/>` : ""}
+      ${fillCol ? `<polygon fill="${fillCol}" points="${P},${my(0)} ${poly} ${W - R},${my(0)}"/>` : ""}
       <polyline fill="none" stroke="${col}" stroke-width="2" points="${poly}"/>
       <text x="${P}" y="${H - 5}" font-size="9.5" fill="#94a3b8">${dates[0] || ""}</text>
       <text x="${W - R}" y="${H - 5}" font-size="9.5" text-anchor="end" fill="#94a3b8">${dates[dates.length - 1] || ""}</text>`;
@@ -328,6 +332,7 @@ function renderClosedTrades() {
     const hasNote = JOURNAL_KEYS.has(c.trade_id) || JOURNAL_KEYS.has(c.symbol);
     return `<tr>
       <td style="text-align:center;">${hasNote ? "👁" : ""}</td>
+      <td class="left">${c.account_id || "PAPER_1"}</td>
       <td class="left"><a href="javascript:void(0)" onclick="openLiveTradeLog('closed', ${idx})">${c.trade_id || ("#" + (idx + 1))}</a></td>
       <td class="left"><b>${c.symbol}</b></td><td class="left">${c.side}</td><td>${c.qty}</td>
       <td>${ep.toFixed(2)}</td><td>${xp.toFixed(2)}</td>
@@ -338,7 +343,7 @@ function renderClosedTrades() {
       <td class="${(c.money_r || 0) >= 0 ? "pos" : "neg"}">${Number(c.money_r || 0) >= 0 ? "+" : ""}${Number(c.money_r || 0).toFixed(2)}R</td>
       <td class="left">${String(c.closed_at || "").slice(0, 19).replace("T", " ")}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="13" class="left muted">No closed trades match filter</td></tr>`;
+  }).join("") || `<tr><td colspan="14" class="left muted">No closed trades match filter</td></tr>`;
 }
 
 async function refreshPortfolio() {
@@ -354,6 +359,19 @@ async function refreshPortfolio() {
   LAST_SNAPS = snapRes.snapshots || [];
   JOURNAL_KEYS = new Set(d.journal_keys || []);
   LAST_EQUITY = eq;
+  const accts = d.accounts || [];
+  const ordAc = document.getElementById("ord_account");
+  if (ordAc && accts.length) {
+    const curA = ordAc.value;
+    ordAc.innerHTML = accts.map(a => `<option value="${a.account_id}">${a.account_id} (${a.broker})</option>`).join("");
+    if (curA) ordAc.value = curA;
+  }
+  const pfAc = document.getElementById("perfAcctFilter");
+  if (pfAc && accts.length) {
+    const curP = pfAc.value;
+    pfAc.innerHTML = '<option value="">All Accounts</option>' + accts.map(a => `<option value="${a.account_id}">${a.account_id}</option>`).join("");
+    pfAc.value = curP;
+  }
 
   let totalOpenRiskInr = 0, totalLiveR = 0;
   const posRowsHtml = LAST_POSITIONS.map(p => {
@@ -375,6 +393,7 @@ async function refreshPortfolio() {
 
     return `<tr>
       <td style="text-align:center;">${hasNote ? "👁" : ""}</td>
+      <td class="left">${p.account_id || "PAPER_1"}</td>
       <td class="left"><a href="javascript:void(0)" onclick="openLiveTradeLog('open', '${p.symbol}')"><b>${p.symbol}</b></a></td>
       <td class="left">${p.product}</td><td>${p.net_qty}</td><td>${allocPct.toFixed(2)}%</td>
       <td>${avgE.toFixed(2)}</td><td>${ltp.toFixed(2)}</td><td>${sl ? sl.toFixed(2) : "-"}</td><td>${tgt ? tgt.toFixed(2) : "-"}</td>
@@ -403,7 +422,7 @@ async function refreshPortfolio() {
   const grid = document.getElementById("portKpiGrid");
   if (grid) { grid.innerHTML = kpis.map(([l, v]) => `<div class="kpi"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join(""); if (window.attachHelpIcons) attachHelpIcons(grid); }
 
-  document.getElementById("posRows").innerHTML = posRowsHtml || `<tr><td colspan="13" class="left muted">No open positions</td></tr>`;
+  document.getElementById("posRows").innerHTML = posRowsHtml || `<tr><td colspan="14" class="left muted">No open positions</td></tr>`;
   renderPerformanceMetrics();
   renderPortfolioCharts();
   renderOpenOrders();

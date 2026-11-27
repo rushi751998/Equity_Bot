@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>{% block title %}tfalgo Quant Workstation{% endblock %}</title>
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=3">
   <script>
     if (localStorage.getItem("tfalgo_theme_v1") !== "light") {
       document.documentElement.classList.add("tf-dark");
@@ -32,6 +32,7 @@
       </nav>
     </div>
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span id="profileBadge" class="muted" style="font-weight:700;">👤 --</span>
       <span id="healthBadge" class="muted">Sync: --</span>
       <label class="muted" style="display:flex;align-items:center;gap:6px;">
         Session:
@@ -51,6 +52,7 @@
   </div>
   {% endif %}
 
+  <div id="tfToastContainer" class="tf-toast-wrap"></div>
   <main class="container">
     {% block content %}{% endblock %}
   </main>
@@ -73,7 +75,7 @@
     </div>
   </div>
 
-  <script src="/static/js/core.js"></script>
+  <script src="/static/js/core.js?v=3"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

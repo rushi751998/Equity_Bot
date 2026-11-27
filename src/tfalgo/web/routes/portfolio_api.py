@@ -29,9 +29,14 @@ def get_portfolio_state() -> dict[str, Any]:
     mtm = sum(float(p.get("mtm", 0.0)) for p in snap["positions"])
     cap = float(cfg.get("paper_capital", 1_000_000.0))
     j_keys = sorted({x.get("trade_key") for x in _load_json_list(JOURNAL_PATH) if x.get("trade_key")})
+    prof = broker.get_profile()
+    accts = cfg.get("accounts") or []
     return {
         "ok": True,
         "broker": broker.name,
+        "profile": prof,
+        "accounts": [{"account_id": a.get("account_id"), "user_name": a.get("user_name"), "broker": a.get("broker")} for a in accts],
+        "toasts": EXEC_MGR.toast_queue[-10:],
         "capital": cap,
         "realized_pnl": round(realized, 2),
         "unrealized_mtm": round(mtm, 2),
@@ -57,7 +62,7 @@ def place_portfolio_order(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         return {"ok": False, "error": "Symbol, Qty, Limit Price, and SL Price are required."}
     targets = body.get("targets") or []
     move_be = bool(body.get("move_sl_be_after_t1", True))
-    return EXEC_MGR.place_smart_order(symbol, side, qty, product, limit_price, sl_price, target_price, targets=targets, move_sl_be_after_t1=move_be)
+    return EXEC_MGR.place_smart_order(symbol, side, qty, product, limit_price, sl_price, target_price, targets=targets, move_sl_be_after_t1=move_be, account_id=body.get("account_id"))
 
 
 @router.post("/exit")
