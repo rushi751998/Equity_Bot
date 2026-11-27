@@ -238,44 +238,73 @@ function renderPerformanceMetrics() {
   grid.innerHTML = items.map(([l, v]) => `<div class="kpi"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join("");
 }
 
+let PORT_CHART_TAB = "eq";
+
+function setPortChartTab(tab, btn) {
+  PORT_CHART_TAB = tab;
+  document.querySelectorAll(".pchart-tab").forEach(b => b.classList.remove("primary"));
+  if (btn) btn.classList.add("primary");
+  const cuWrap = document.getElementById("pCuUnitWrap");
+  if (cuWrap) cuWrap.style.display = tab === "cap" ? "inline-flex" : "none";
+  const titles = {
+    eq: "Account P&L (%) — Daily Snapshots",
+    cap: `Capital Used (${PORT_CU_UNIT === "pct" ? "%" : "₹"}) — Daily Snapshots`,
+    dd: "Drawdown (%) — Daily Snapshots",
+  };
+  const tEl = document.getElementById("portChartTitle");
+  if (tEl) tEl.textContent = titles[tab] || titles.eq;
+  renderPortfolioCharts();
+}
+
 function setPortCuUnit(u) {
   PORT_CU_UNIT = u;
   document.getElementById("pCuPctBtn").className = "btn" + (u === "pct" ? " primary" : "");
   document.getElementById("pCuInrBtn").className = "btn" + (u === "inr" ? " primary" : "");
+  const tEl = document.getElementById("portChartTitle");
+  if (tEl && PORT_CHART_TAB === "cap") tEl.textContent = `Capital Used (${u === "pct" ? "%" : "₹"}) — Daily Snapshots`;
   renderPortfolioCharts();
 }
 
 function renderPortfolioCharts() {
-  const eqSvg = document.getElementById("portEqSvg"), capSvg = document.getElementById("portCapSvg"), ddSvg = document.getElementById("portDdSvg");
-  if (!eqSvg || !capSvg || !ddSvg || !LAST_SNAPS.length) return;
+  const svg = document.getElementById("portMainSvg");
+  if (!svg || !LAST_SNAPS.length) return;
   const pts = LAST_SNAPS;
   const dates = pts.map(x => x.date);
-  const retPct = pts.map(x => (x.capital > 0 ? ((x.equity / x.capital) - 1) * 100 : 0));
-  const capVals = pts.map(x => (PORT_CU_UNIT === "pct" ? (x.capital > 0 ? (x.capital_used / x.capital) * 100 : 0) : x.capital_used));
-  let pk = pts[0].equity || pts[0].capital || 1;
-  const ddPct = pts.map(x => { if (x.equity > pk) pk = x.equity; return pk > 0 ? ((x.equity - pk) / pk) * 100 : 0; });
 
-  const drawMini = (svg, vals, col, suffix, fillCol) => {
-    const W = 550, H = 170, P = 46, R = 12;
-    let ymin = Math.min(...vals, 0), ymax = Math.max(...vals, 0);
-    if (ymax === ymin) { ymax += 1; ymin -= 1; }
-    const mx = i => P + (W - P - R) * (i / Math.max(1, vals.length - 1));
-    const my = v => (H - 22) - (H - 36) * ((v - ymin) / (ymax - ymin));
-    const ptsArr = vals.length === 1 ? [vals[0], vals[0]] : vals;
-    const mx2 = i => P + (W - P - R) * (i / Math.max(1, ptsArr.length - 1));
-    const poly = ptsArr.map((v, i) => `${mx2(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ");
-    svg.innerHTML = `
-      <line x1="${P}" y1="${my(0)}" x2="${W - R}" y2="${my(0)}" stroke="#475569" stroke-dasharray="3,3"/>
-      <text x="${P - 4}" y="${my(ymax) + 4}" font-size="10" text-anchor="end" fill="#94a3b8">${ymax.toFixed(1)}${suffix}</text>
-      <text x="${P - 4}" y="${my(ymin) + 4}" font-size="10" text-anchor="end" fill="#94a3b8">${ymin.toFixed(1)}${suffix}</text>
-      ${fillCol ? `<polygon fill="${fillCol}" points="${P},${my(0)} ${poly} ${W - R},${my(0)}"/>` : ""}
-      <polyline fill="none" stroke="${col}" stroke-width="2" points="${poly}"/>
-      <text x="${P}" y="${H - 5}" font-size="9.5" fill="#94a3b8">${dates[0] || ""}</text>
-      <text x="${W - R}" y="${H - 5}" font-size="9.5" text-anchor="end" fill="#94a3b8">${dates[dates.length - 1] || ""}</text>`;
-  };
-  drawMini(eqSvg, retPct, "#3b82f6", "%", "rgba(59,130,246,0.12)");
-  drawMini(capSvg, capVals, "#10b981", PORT_CU_UNIT === "pct" ? "%" : "", "rgba(16,185,129,0.14)");
-  drawMini(ddSvg, ddPct, "#ef4444", "%", "rgba(239,68,68,0.15)");
+  let vals, col, suffix, fillCol;
+  if (PORT_CHART_TAB === "cap") {
+    vals = pts.map(x => (PORT_CU_UNIT === "pct" ? (x.capital > 0 ? (x.capital_used / x.capital) * 100 : 0) : x.capital_used));
+    col = "#10b981"; suffix = PORT_CU_UNIT === "pct" ? "%" : ""; fillCol = "rgba(16,185,129,0.14)";
+  } else if (PORT_CHART_TAB === "dd") {
+    let pk = pts[0].equity || pts[0].capital || 1;
+    vals = pts.map(x => { if (x.equity > pk) pk = x.equity; return pk > 0 ? ((x.equity - pk) / pk) * 100 : 0; });
+    col = "#ef4444"; suffix = "%"; fillCol = "rgba(239,68,68,0.15)";
+  } else {
+    vals = pts.map(x => (x.capital > 0 ? ((x.equity / x.capital) - 1) * 100 : 0));
+    col = "#3b82f6"; suffix = "%"; fillCol = "rgba(59,130,246,0.12)";
+  }
+
+  const W = 1100, H = 250, P = 64, R = 20;
+  let ymin = Math.min(...vals, 0), ymax = Math.max(...vals, 0);
+  if (ymax === ymin) { ymax += 1; ymin -= 1; }
+  const my = v => (H - 28) - (H - 48) * ((v - ymin) / (ymax - ymin));
+  const ptsArr = vals.length === 1 ? [vals[0], vals[0]] : vals;
+  const mx = i => P + (W - P - R) * (i / Math.max(1, ptsArr.length - 1));
+  const poly = ptsArr.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ");
+  const fmt = v => suffix ? `${v.toFixed(2)}${suffix}` : `₹${Math.round(v).toLocaleString()}`;
+  const latest = vals[vals.length - 1] || 0;
+
+  svg.innerHTML = `
+    <line x1="${P}" y1="${my(0)}" x2="${W - R}" y2="${my(0)}" stroke="#475569" stroke-dasharray="4,4"/>
+    <text x="${P - 8}" y="${my(ymax) + 4}" font-size="11" text-anchor="end" fill="#94a3b8">${fmt(ymax)}</text>
+    <text x="${P - 8}" y="${my(0) + 4}" font-size="11" text-anchor="end" fill="#64748b">${fmt(0)}</text>
+    <text x="${P - 8}" y="${my(ymin) + 4}" font-size="11" text-anchor="end" fill="#94a3b8">${fmt(ymin)}</text>
+    <polygon fill="${fillCol}" points="${P},${my(0)} ${poly} ${W - R},${my(0)}"/>
+    <polyline fill="none" stroke="${col}" stroke-width="2.5" points="${poly}"/>
+    <circle cx="${mx(ptsArr.length - 1)}" cy="${my(latest)}" r="4" fill="${col}"/>
+    <text x="${W - R}" y="18" font-size="12" font-weight="700" text-anchor="end" fill="${col}">Latest: ${fmt(latest)}</text>
+    <text x="${P}" y="${H - 6}" font-size="11" fill="#94a3b8">${dates[0] || ""}</text>
+    <text x="${W - R}" y="${H - 6}" font-size="11" text-anchor="end" fill="#94a3b8">${dates[dates.length - 1] || ""}</text>`;
 }
 
 async function cancelOrder(orderId) {

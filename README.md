@@ -62,3 +62,6 @@ Example (adding a new strategy):
 - MIS eligibility and leverage are ignored (1x cash assumed).
 - The sealed holdout includes the 2020 COVID crash and rebound (an unusual regime).
 - A backtest is not a forecast. Live trading additionally requires broker API integration, reconciliation, a kill switch, and compliance with current SEBI retail-algo rules (out of scope).
+
+
+https://api.telegram.org/bot7212730077:AAEUdPcCZnamCG-4sJ9gTEDnO1UeOYxGPJg/getUpdates
